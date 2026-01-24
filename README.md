@@ -36,18 +36,20 @@ Agent framework for building Claude-powered CLI tools using [agent-sdk-go](https
 ## Installation
 
 ```bash
-# Clone both repositories as siblings (uses replace directive)
+go get github.com/dotcommander/agent-framework
+```
+
+### Local Development
+
+For contributing or modifying the SDK:
+
+```bash
+# Clone both repositories as siblings
 git clone https://github.com/dotcommander/agent.git
 git clone https://github.com/dotcommander/agent-sdk-go.git
 
-# Build
+# Uncomment replace directive in go.mod, then build
 cd agent && go build ./...
-```
-
-Or add to your project:
-
-```bash
-go get github.com/dotcommander/agent
 ```
 
 ## Quick Start
@@ -147,8 +149,8 @@ import (
     "fmt"
     "log"
 
-    "github.com/dotcommander/agent/app"
-    "github.com/dotcommander/agent/tools"
+    "github.com/dotcommander/agent-framework/app"
+    "github.com/dotcommander/agent-framework/tools"
 )
 
 func main() {
@@ -197,7 +199,7 @@ package main
 
 import (
     "context"
-    "github.com/dotcommander/agent/app"
+    "github.com/dotcommander/agent-framework/app"
 )
 
 func main() {
@@ -441,14 +443,14 @@ ln -sf "$(pwd)/agent-example" ~/go/bin/agent-example
 
 ## Development Setup
 
-This framework uses a `replace` directive for local development with agent-sdk-go:
+For local development with agent-sdk-go, uncomment the `replace` directive in go.mod:
 
 ```go
-// go.mod
-replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
+// go.mod (uncomment for local development)
+// replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
 ```
 
-Clone both repositories as siblings for the replace directive to resolve.
+Then clone both repositories as siblings for the replace directive to resolve.
 
 ## Design Principles
 

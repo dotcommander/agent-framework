@@ -26,29 +26,25 @@ golangci-lint run
 
 ## Dependencies
 
-Uses `replace` directive for local development:
+Install via:
+```bash
+go get github.com/dotcommander/agent-framework
 ```
-replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
+
+### Local Development
+
+For local development with agent-sdk-go, uncomment the `replace` directive in go.mod:
+```
+// replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
 ```
 
-Clone both repos as siblings for the build to work.
-
-### External Installation
-
-The `replace` directive breaks `go install`. For external users:
+Then clone both repos as siblings:
 
 ```bash
-# Option 1: Clone and build locally
 git clone https://github.com/dotcommander/agent.git
 git clone https://github.com/dotcommander/agent-sdk-go.git
 cd agent && go build ./...
-
-# Option 2: Comment out replace in go.mod (requires published SDK)
-# In go.mod, comment or delete: replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
-go install github.com/dotcommander/agent/cmd/agent@latest
 ```
-
-For releases, the replace directive should be removed before tagging.
 
 ## Examples
 
