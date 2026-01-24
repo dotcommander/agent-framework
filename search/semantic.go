@@ -2,6 +2,7 @@
 package search
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"math"
@@ -40,6 +41,23 @@ type SearchResult struct {
 	Highlights []string       `json:"highlights,omitempty"`
 }
 
+// SearchOptions configures search behavior.
+type SearchOptions struct {
+	// Offset skips the first N results (for pagination).
+	Offset int
+	// Limit caps the number of returned results.
+	// If zero, uses the topK parameter as limit.
+	Limit int
+}
+
+// SearchResponse wraps search results with pagination info.
+type SearchResponse struct {
+	Results    []*SearchResult `json:"results"`
+	TotalCount int             `json:"total_count"`
+	Offset     int             `json:"offset"`
+	Limit      int             `json:"limit"`
+}
+
 // EmbeddingProvider generates embeddings for text.
 type EmbeddingProvider interface {
 	// Embed generates an embedding for the given text.
@@ -52,6 +70,12 @@ type EmbeddingProvider interface {
 	Dimension() int
 }
 
+// lruEntry tracks document access for LRU eviction.
+type lruEntry struct {
+	docID   string
+	element *list.Element
+}
+
 // SemanticIndex stores documents with embeddings for search.
 type SemanticIndex struct {
 	documents map[string]*Document
@@ -59,6 +83,11 @@ type SemanticIndex struct {
 	embedder  EmbeddingProvider
 	chunker   Chunker
 	mu        sync.RWMutex
+
+	// LRU eviction
+	maxEntries int                    // 0 means unlimited
+	lruList    *list.List             // front = most recent, back = least recent
+	lruMap     map[string]*lruEntry   // docID -> lruEntry
 }
 
 // IndexConfig configures the semantic index.
@@ -77,14 +106,31 @@ func DefaultIndexConfig() *IndexConfig {
 	}
 }
 
+// IndexOption configures a SemanticIndex.
+type IndexOption func(*SemanticIndex)
+
+// WithMaxEntries sets the maximum number of documents before LRU eviction.
+// Default is 0 (unlimited). Recommended: 100000 for memory-constrained environments.
+func WithMaxEntries(max int) IndexOption {
+	return func(idx *SemanticIndex) {
+		idx.maxEntries = max
+	}
+}
+
 // NewSemanticIndex creates a new semantic index.
-func NewSemanticIndex(embedder EmbeddingProvider, chunker Chunker) *SemanticIndex {
-	return &SemanticIndex{
+func NewSemanticIndex(embedder EmbeddingProvider, chunker Chunker, opts ...IndexOption) *SemanticIndex {
+	idx := &SemanticIndex{
 		documents: make(map[string]*Document),
 		chunks:    make(map[string]*DocumentChunk),
 		embedder:  embedder,
 		chunker:   chunker,
+		lruList:   list.New(),
+		lruMap:    make(map[string]*lruEntry),
 	}
+	for _, opt := range opts {
+		opt(idx)
+	}
+	return idx
 }
 
 // Add adds a document to the index.
@@ -128,12 +174,60 @@ func (idx *SemanticIndex) Add(ctx context.Context, doc *Document) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
+	// Check if document already exists (update case)
+	if entry, exists := idx.lruMap[doc.ID]; exists {
+		// Move to front (most recently used)
+		idx.lruList.MoveToFront(entry.element)
+		// Remove old chunks
+		if oldDoc, ok := idx.documents[doc.ID]; ok {
+			for _, chunk := range oldDoc.Chunks {
+				delete(idx.chunks, chunk.ID)
+			}
+		}
+	} else {
+		// New document - add to LRU
+		entry := &lruEntry{docID: doc.ID}
+		entry.element = idx.lruList.PushFront(doc.ID)
+		idx.lruMap[doc.ID] = entry
+	}
+
 	idx.documents[doc.ID] = doc
 	for _, chunk := range doc.Chunks {
 		idx.chunks[chunk.ID] = chunk
 	}
 
+	// Evict if over limit
+	idx.evictIfNeeded()
+
 	return nil
+}
+
+// evictIfNeeded removes least recently used documents if over maxEntries.
+// Must be called with mu held.
+func (idx *SemanticIndex) evictIfNeeded() {
+	if idx.maxEntries <= 0 {
+		return
+	}
+
+	for len(idx.documents) > idx.maxEntries {
+		// Remove from back (least recently used)
+		elem := idx.lruList.Back()
+		if elem == nil {
+			break
+		}
+
+		docID := elem.Value.(string)
+		idx.lruList.Remove(elem)
+		delete(idx.lruMap, docID)
+
+		// Remove document and its chunks
+		if doc, ok := idx.documents[docID]; ok {
+			for _, chunk := range doc.Chunks {
+				delete(idx.chunks, chunk.ID)
+			}
+			delete(idx.documents, docID)
+		}
+	}
 }
 
 // AddBatch adds multiple documents.
@@ -156,6 +250,12 @@ func (idx *SemanticIndex) Remove(id string) {
 			delete(idx.chunks, chunk.ID)
 		}
 		delete(idx.documents, id)
+
+		// Clean up LRU tracking
+		if entry, ok := idx.lruMap[id]; ok {
+			idx.lruList.Remove(entry.element)
+			delete(idx.lruMap, id)
+		}
 	}
 }
 
@@ -174,8 +274,28 @@ func (idx *SemanticIndex) Search(ctx context.Context, query string, topK int) ([
 	return idx.SearchByEmbedding(queryEmbedding, topK), nil
 }
 
+// SearchWithOptions performs semantic search with pagination.
+func (idx *SemanticIndex) SearchWithOptions(ctx context.Context, query string, opts *SearchOptions) (*SearchResponse, error) {
+	if idx.embedder == nil {
+		return nil, fmt.Errorf("no embedder configured")
+	}
+
+	queryEmbedding, err := idx.embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("embed query: %w", err)
+	}
+
+	return idx.SearchByEmbeddingWithOptions(queryEmbedding, opts), nil
+}
+
 // SearchByEmbedding searches by embedding vector.
 func (idx *SemanticIndex) SearchByEmbedding(query Embedding, topK int) []*SearchResult {
+	resp := idx.SearchByEmbeddingWithOptions(query, &SearchOptions{Limit: topK})
+	return resp.Results
+}
+
+// SearchByEmbeddingWithOptions searches by embedding vector with pagination.
+func (idx *SemanticIndex) SearchByEmbeddingWithOptions(query Embedding, opts *SearchOptions) *SearchResponse {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
@@ -218,12 +338,36 @@ func (idx *SemanticIndex) SearchByEmbedding(query Embedding, topK int) []*Search
 		return results[i].Score > results[j].Score
 	})
 
-	// Return top K
-	if len(results) > topK {
-		results = results[:topK]
+	totalCount := len(results)
+
+	// Apply pagination
+	offset := 0
+	limit := totalCount
+	if opts != nil {
+		offset = opts.Offset
+		if opts.Limit > 0 {
+			limit = opts.Limit
+		}
 	}
 
-	return results
+	// Apply offset
+	if offset >= len(results) {
+		results = nil
+	} else {
+		results = results[offset:]
+	}
+
+	// Apply limit
+	if len(results) > limit {
+		results = results[:limit]
+	}
+
+	return &SearchResponse{
+		Results:    results,
+		TotalCount: totalCount,
+		Offset:     offset,
+		Limit:      limit,
+	}
 }
 
 // HybridSearch combines semantic and keyword search.
@@ -323,11 +467,19 @@ func (idx *SemanticIndex) KeywordSearch(query string, topK int) []*SearchResult 
 	return results
 }
 
-// Get retrieves a document by ID.
+// Get retrieves a document by ID and updates its LRU position.
 func (idx *SemanticIndex) Get(id string) *Document {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return idx.documents[id]
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	doc := idx.documents[id]
+	if doc != nil {
+		// Update LRU on access
+		if entry, ok := idx.lruMap[id]; ok {
+			idx.lruList.MoveToFront(entry.element)
+		}
+	}
+	return doc
 }
 
 // Count returns the number of indexed documents.
@@ -343,6 +495,8 @@ func (idx *SemanticIndex) Clear() {
 	defer idx.mu.Unlock()
 	idx.documents = make(map[string]*Document)
 	idx.chunks = make(map[string]*DocumentChunk)
+	idx.lruList = list.New()
+	idx.lruMap = make(map[string]*lruEntry)
 }
 
 // Chunker splits documents into chunks.
@@ -530,9 +684,9 @@ type CodeIndex struct {
 }
 
 // NewCodeIndex creates a new code index.
-func NewCodeIndex(embedder EmbeddingProvider) *CodeIndex {
+func NewCodeIndex(embedder EmbeddingProvider, opts ...IndexOption) *CodeIndex {
 	return &CodeIndex{
-		SemanticIndex: NewSemanticIndex(embedder, NewFixedSizeChunker(512, 64)),
+		SemanticIndex: NewSemanticIndex(embedder, NewFixedSizeChunker(512, 64), opts...),
 		codeDocuments: make(map[string]*CodeDocument),
 	}
 }
