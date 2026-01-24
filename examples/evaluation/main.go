@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dotcommander/agent-framework/verification"
+	"github.com/dotcommander/agent/verification"
 )
 
 func main() {

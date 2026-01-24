@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/dotcommander/agent-framework"
-	"github.com/dotcommander/agent-framework/app"
+	agent "github.com/dotcommander/agent"
+	"github.com/dotcommander/agent/app"
 )
 
 // CalculateInput is the input schema for the calculate tool.

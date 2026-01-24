@@ -9,7 +9,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dotcommander/agent-framework/search"
+	"github.com/dotcommander/agent/search"
 )
 
 func main() {
