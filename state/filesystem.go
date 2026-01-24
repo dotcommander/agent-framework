@@ -4,13 +4,43 @@ package state
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
+
+// Security-related errors.
+var (
+	ErrPathOutsideBase = errors.New("path outside allowed base directory")
+	ErrPathTraversal   = errors.New("path traversal detected")
+)
+
+// sanitizePathError returns a user-safe error message that doesn't expose
+// sensitive path information. The original error is preserved for logging.
+func sanitizePathError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// Check for known error types and return sanitized messages
+	if os.IsNotExist(err) {
+		return fmt.Errorf("%s: file not found", operation)
+	}
+	if os.IsPermission(err) {
+		return fmt.Errorf("%s: permission denied", operation)
+	}
+	if os.IsTimeout(err) {
+		return fmt.Errorf("%s: operation timed out", operation)
+	}
+
+	// For path-related errors, return generic message
+	return fmt.Errorf("%s: operation failed", operation)
+}
 
 // FileState represents the state of a file at a point in time.
 type FileState struct {
@@ -42,43 +72,131 @@ type Snapshot struct {
 
 // FileSystemStore tracks file system state and changes.
 type FileSystemStore struct {
-	basePath  string
-	snapshots []*Snapshot
-	current   map[string]*FileState
-	changes   []*FileChange
-	mu        sync.RWMutex
+	basePath       string
+	basePathAbs    string // Resolved absolute path of basePath
+	enforceBase    bool   // If true, all operations must be within basePath
+	snapshots      []*Snapshot
+	current        map[string]*FileState
+	changes        []*FileChange
+	mu             sync.RWMutex
 }
 
-// NewFileSystemStore creates a new file system store.
-func NewFileSystemStore(basePath string) *FileSystemStore {
-	return &FileSystemStore{
-		basePath:  basePath,
-		snapshots: make([]*Snapshot, 0),
-		current:   make(map[string]*FileState),
-		changes:   make([]*FileChange, 0),
+// FileSystemStoreOption configures FileSystemStore.
+type FileSystemStoreOption func(*FileSystemStore)
+
+// WithEnforceBasePath enables strict base path enforcement for all operations.
+func WithEnforceBasePath(enforce bool) FileSystemStoreOption {
+	return func(s *FileSystemStore) {
+		s.enforceBase = enforce
 	}
+}
+
+// NewFileSystemStore creates a new file system store with optional path enforcement.
+func NewFileSystemStore(basePath string, opts ...FileSystemStoreOption) *FileSystemStore {
+	s := &FileSystemStore{
+		basePath:    basePath,
+		enforceBase: true, // Default to enforcing base path for security
+		snapshots:   make([]*Snapshot, 0),
+		current:     make(map[string]*FileState),
+		changes:     make([]*FileChange, 0),
+	}
+
+	// Resolve absolute path of base
+	if basePath != "" {
+		if abs, err := filepath.Abs(basePath); err == nil {
+			s.basePathAbs = filepath.Clean(abs)
+		}
+	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s
+}
+
+// validatePath ensures a path is within the allowed base directory.
+func (s *FileSystemStore) validatePath(path string) (string, error) {
+	// Get absolute path
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+
+	cleanPath := filepath.Clean(absPath)
+
+	// Check for traversal patterns in original input
+	if containsTraversal(path) {
+		return "", ErrPathTraversal
+	}
+
+	// If base path enforcement is enabled, verify path is within base
+	if s.enforceBase && s.basePathAbs != "" {
+		rel, err := filepath.Rel(s.basePathAbs, cleanPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve relative path: %w", err)
+		}
+
+		// If relative path starts with .., it's outside base directory
+		if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			return "", fmt.Errorf("%w: %s is outside %s", ErrPathOutsideBase, cleanPath, s.basePathAbs)
+		}
+	}
+
+	return cleanPath, nil
+}
+
+// containsTraversal checks if a path contains obvious traversal patterns.
+func containsTraversal(path string) bool {
+	normalized := filepath.ToSlash(path)
+
+	patterns := []string{
+		"../",
+		"..\\",
+		"..%2f",
+		"..%5c",
+		"%2e%2e/",
+		"%2e%2e\\",
+	}
+
+	for _, pattern := range patterns {
+		if strings.Contains(strings.ToLower(normalized), strings.ToLower(pattern)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // CaptureFile captures the current state of a file.
+// This is the public API that handles path validation.
 func (s *FileSystemStore) CaptureFile(path string) (*FileState, error) {
-	absPath, err := filepath.Abs(path)
+	// Validate path before any operations
+	validPath, err := s.validatePath(path)
 	if err != nil {
-		return nil, fmt.Errorf("resolve path: %w", err)
+		return nil, err
 	}
 
-	info, err := os.Stat(absPath)
+	return s.captureFileInternal(validPath)
+}
+
+// captureFileInternal captures file state for an already-validated path.
+// This internal method can be called while holding locks since it doesn't
+// acquire any locks itself. The path must already be validated and cleaned.
+func (s *FileSystemStore) captureFileInternal(validPath string) (*FileState, error) {
+	info, err := os.Stat(validPath)
 	if os.IsNotExist(err) {
 		return &FileState{
-			Path:   absPath,
+			Path:   validPath,
 			Exists: false,
 		}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("stat: %w", err)
+		return nil, sanitizePathError("stat", err)
 	}
 
 	state := &FileState{
-		Path:    absPath,
+		Path:    validPath,
 		Size:    info.Size(),
 		ModTime: info.ModTime(),
 		Mode:    info.Mode(),
@@ -86,9 +204,9 @@ func (s *FileSystemStore) CaptureFile(path string) (*FileState, error) {
 	}
 
 	// Calculate hash
-	hash, err := hashFile(absPath)
+	hash, err := hashFile(validPath)
 	if err != nil {
-		return nil, fmt.Errorf("hash: %w", err)
+		return nil, sanitizePathError("hash", err)
 	}
 	state.Hash = hash
 
@@ -167,7 +285,10 @@ func (s *FileSystemStore) DetectChanges() ([]*FileChange, error) {
 	var changes []*FileChange
 
 	for path, before := range s.current {
-		after, err := s.CaptureFile(path)
+		// Use captureFileInternal since paths in s.current are already validated
+		// when they were added via Track(). This avoids redundant validation
+		// and prevents any potential locking issues.
+		after, err := s.captureFileInternal(path)
 		if err != nil {
 			continue
 		}
@@ -275,14 +396,20 @@ func (s *FileSystemStore) Rollback(snapshotID string) error {
 	defer s.mu.Unlock()
 
 	for path, state := range snapshot.Files {
+		// Validate path before any write operations
+		validPath, err := s.validatePath(path)
+		if err != nil {
+			return fmt.Errorf("invalid path %s: %w", path, err)
+		}
+
 		if state.Exists && state.Content != nil {
-			if err := os.WriteFile(path, state.Content, state.Mode); err != nil {
-				return fmt.Errorf("restore %s: %w", path, err)
+			if err := os.WriteFile(validPath, state.Content, state.Mode); err != nil {
+				return fmt.Errorf("restore %s: %w", validPath, err)
 			}
 		} else if !state.Exists {
 			// File should not exist, delete it
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("delete %s: %w", path, err)
+			if err := os.Remove(validPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("delete %s: %w", validPath, err)
 			}
 		}
 	}
@@ -304,13 +431,24 @@ func (s *FileSystemStore) RollbackChanges(count int) error {
 		change := s.changes[i]
 		before := change.Before
 
+		// Validate path before any write operations
+		validPath, err := s.validatePath(before.Path)
+		if err != nil {
+			return fmt.Errorf("invalid path %s: %w", before.Path, err)
+		}
+
 		if before.Exists && before.Content != nil {
-			if err := os.WriteFile(before.Path, before.Content, before.Mode); err != nil {
-				return fmt.Errorf("restore %s: %w", before.Path, err)
+			if err := os.WriteFile(validPath, before.Content, before.Mode); err != nil {
+				return fmt.Errorf("restore %s: %w", validPath, err)
 			}
 		} else if !before.Exists {
-			if err := os.Remove(change.Path); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("delete %s: %w", change.Path, err)
+			// Also validate the change path for deletion
+			validChangePath, err := s.validatePath(change.Path)
+			if err != nil {
+				return fmt.Errorf("invalid path %s: %w", change.Path, err)
+			}
+			if err := os.Remove(validChangePath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("delete %s: %w", validChangePath, err)
 			}
 		}
 	}
