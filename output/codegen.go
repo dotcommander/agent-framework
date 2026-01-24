@@ -6,6 +6,16 @@ import (
 	"strings"
 )
 
+// Limits for diff generation to prevent resource exhaustion.
+const (
+	// MaxDiffLines is the maximum number of lines to process in a diff.
+	// Files larger than this will be truncated with a warning.
+	MaxDiffLines = 10000
+
+	// MaxDiffOutputLines is the maximum number of diff output lines to generate.
+	MaxDiffOutputLines = 5000
+)
+
 // CodeBlock represents a generated code block.
 type CodeBlock struct {
 	FilePath    string `json:"file_path"`
@@ -305,15 +315,42 @@ func generateDiff(filePath, oldContent, newContent string) FileDiff {
 		Lines:      make([]DiffLine, 0),
 	}
 
+	// Enforce input size limits to prevent memory exhaustion
+	truncated := false
+	if len(oldLines) > MaxDiffLines {
+		oldLines = oldLines[:MaxDiffLines]
+		truncated = true
+	}
+	if len(newLines) > MaxDiffLines {
+		newLines = newLines[:MaxDiffLines]
+		truncated = true
+	}
+
 	// Simple LCS-based diff
 	lcs := longestCommonSubsequence(oldLines, newLines)
 
+	// Track if we've hit output limit
+	outputLimitReached := false
+
 	oldIdx, newIdx, lcsIdx := 0, 0, 0
 
+	// Helper to check output limit
+	checkLimit := func() bool {
+		if len(diff.Lines) >= MaxDiffOutputLines {
+			outputLimitReached = true
+			return true
+		}
+		return false
+	}
+
 	for oldIdx < len(oldLines) || newIdx < len(newLines) {
+		if checkLimit() {
+			break
+		}
+
 		if lcsIdx < len(lcs) {
 			// Output removals (old lines not in LCS)
-			for oldIdx < len(oldLines) && oldLines[oldIdx] != lcs[lcsIdx] {
+			for oldIdx < len(oldLines) && oldLines[oldIdx] != lcs[lcsIdx] && !checkLimit() {
 				diff.Lines = append(diff.Lines, DiffLine{
 					Type:    "remove",
 					LineNum: oldIdx + 1,
@@ -324,7 +361,7 @@ func generateDiff(filePath, oldContent, newContent string) FileDiff {
 			}
 
 			// Output additions (new lines not in LCS)
-			for newIdx < len(newLines) && newLines[newIdx] != lcs[lcsIdx] {
+			for newIdx < len(newLines) && newLines[newIdx] != lcs[lcsIdx] && !checkLimit() {
 				diff.Lines = append(diff.Lines, DiffLine{
 					Type:    "add",
 					LineNum: newIdx + 1,
@@ -335,7 +372,7 @@ func generateDiff(filePath, oldContent, newContent string) FileDiff {
 			}
 
 			// Output context (matching line)
-			if oldIdx < len(oldLines) && newIdx < len(newLines) {
+			if oldIdx < len(oldLines) && newIdx < len(newLines) && !checkLimit() {
 				diff.Lines = append(diff.Lines, DiffLine{
 					Type:    "context",
 					LineNum: newIdx + 1,
@@ -347,7 +384,7 @@ func generateDiff(filePath, oldContent, newContent string) FileDiff {
 			}
 		} else {
 			// No more LCS, output remaining as removals/additions
-			for oldIdx < len(oldLines) {
+			for oldIdx < len(oldLines) && !checkLimit() {
 				diff.Lines = append(diff.Lines, DiffLine{
 					Type:    "remove",
 					LineNum: oldIdx + 1,
@@ -356,7 +393,7 @@ func generateDiff(filePath, oldContent, newContent string) FileDiff {
 				diff.Stats.Deletions++
 				oldIdx++
 			}
-			for newIdx < len(newLines) {
+			for newIdx < len(newLines) && !checkLimit() {
 				diff.Lines = append(diff.Lines, DiffLine{
 					Type:    "add",
 					LineNum: newIdx + 1,
@@ -366,6 +403,14 @@ func generateDiff(filePath, oldContent, newContent string) FileDiff {
 				newIdx++
 			}
 		}
+	}
+
+	// Add truncation notice if limits were hit
+	if truncated || outputLimitReached {
+		diff.Lines = append(diff.Lines, DiffLine{
+			Type:    "context",
+			Content: "... (diff truncated due to size limits)",
+		})
 	}
 
 	diff.Stats.Changes = diff.Stats.Additions + diff.Stats.Deletions
