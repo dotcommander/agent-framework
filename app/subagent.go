@@ -65,17 +65,15 @@ type SubagentResult struct {
 // TokenBudget manages a global token pool with thread-safe reservation and release.
 // It prevents OOM by limiting total concurrent token usage across all subagents.
 type TokenBudget struct {
-	total     int64      // Maximum tokens available
-	reserved  int64      // Currently reserved tokens
-	mu        sync.Mutex // Protects reserved
-	waitQueue sync.Cond  // For blocking reservation mode
+	total    int64      // Maximum tokens available
+	reserved int64      // Currently reserved tokens
+	mu       sync.Mutex // Protects reserved and waiters
+	waiters  []chan struct{}
 }
 
 // NewTokenBudget creates a budget pool with the specified total tokens.
 func NewTokenBudget(total int64) *TokenBudget {
-	tb := &TokenBudget{total: total}
-	tb.waitQueue.L = &tb.mu
-	return tb
+	return &TokenBudget{total: total}
 }
 
 // Reserve attempts to reserve tokens from the pool.
@@ -94,36 +92,40 @@ func (tb *TokenBudget) Reserve(tokens int64) bool {
 // ReserveWait blocks until tokens are available, then reserves them.
 // Returns an error if the context is cancelled while waiting.
 func (tb *TokenBudget) ReserveWait(ctx context.Context, tokens int64) error {
-	tb.mu.Lock()
-	defer tb.mu.Unlock()
-
-	for tb.reserved+tokens > tb.total {
-		// Check for context cancellation before waiting
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	for {
+		tb.mu.Lock()
+		if tb.reserved+tokens <= tb.total {
+			tb.reserved += tokens
+			tb.mu.Unlock()
+			return nil
 		}
 
-		// Wait for tokens to be released (with periodic context checks)
-		done := make(chan struct{})
-		go func() {
-			tb.waitQueue.Wait()
-			close(done)
-		}()
-
+		// Register as waiter
+		waiter := make(chan struct{}, 1)
+		tb.waiters = append(tb.waiters, waiter)
 		tb.mu.Unlock()
+
+		// Wait for signal or context cancellation
 		select {
 		case <-ctx.Done():
-			tb.mu.Lock()
+			tb.removeWaiter(waiter)
 			return ctx.Err()
-		case <-done:
-			tb.mu.Lock()
+		case <-waiter:
+			// Token released, loop to retry reservation
 		}
 	}
+}
 
-	tb.reserved += tokens
-	return nil
+// removeWaiter removes a waiter channel from the list.
+func (tb *TokenBudget) removeWaiter(waiter chan struct{}) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	for i, w := range tb.waiters {
+		if w == waiter {
+			tb.waiters = append(tb.waiters[:i], tb.waiters[i+1:]...)
+			return
+		}
+	}
 }
 
 // Release returns tokens to the pool and wakes any waiting reservations.
@@ -135,7 +137,15 @@ func (tb *TokenBudget) Release(tokens int64) {
 	if tb.reserved < 0 {
 		tb.reserved = 0 // Safety: don't go negative
 	}
-	tb.waitQueue.Broadcast() // Wake all waiters to check if they can proceed
+
+	// Notify all waiters (non-blocking send)
+	for _, waiter := range tb.waiters {
+		select {
+		case waiter <- struct{}{}:
+		default:
+		}
+	}
+	tb.waiters = nil // Clear waiters, they'll re-register if needed
 }
 
 // Available returns the number of tokens currently available.
