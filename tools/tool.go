@@ -4,8 +4,9 @@ package tools
 import (
 	"context"
 	"fmt"
+	"slices"
 
-	"github.com/dotcommander/agent-framework/internal/conv"
+	"github.com/dotcommander/agent/internal/conv"
 )
 
 // InputValidationError represents a validation failure for tool input.
@@ -129,14 +130,7 @@ func validateFieldValue(fieldName string, value any, schema any) error {
 
 	// Validate enum constraints
 	if enum, hasEnum := propDef["enum"].([]any); hasEnum {
-		found := false
-		for _, allowed := range enum {
-			if value == allowed {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(enum, value) {
 			return &InputValidationError{
 				Field:   fieldName,
 				Message: "value not in allowed enum values",

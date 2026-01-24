@@ -10,10 +10,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/dotcommander/agent-framework/internal/pathutil"
+	"github.com/dotcommander/agent/internal/pathutil"
 )
 
 // Security-related errors.
@@ -45,12 +46,7 @@ func isBlockedContentType(contentType string) bool {
 	mimeType := strings.TrimSpace(strings.Split(contentType, ";")[0])
 	mimeType = strings.ToLower(mimeType)
 
-	for _, blocked := range blockedContentTypes {
-		if mimeType == blocked {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(blockedContentTypes, mimeType)
 }
 
 // Default limits for file operations.
@@ -212,10 +208,8 @@ func (p *URLProcessor) validateURL(rawURL string) error {
 			return fmt.Errorf("%w: DNS resolution failed for %s", ErrBlockedURL, host)
 		}
 
-		for _, ip := range ips {
-			if isPrivateIP(ip) {
-				return ErrPrivateIP
-			}
+		if slices.ContainsFunc(ips, isPrivateIP) {
+			return ErrPrivateIP
 		}
 	}
 

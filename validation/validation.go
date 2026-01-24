@@ -4,9 +4,10 @@ package validation
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
-	"github.com/dotcommander/agent-framework/internal/conv"
+	"github.com/dotcommander/agent/internal/conv"
 )
 
 // ValidationError represents a validation failure.
@@ -208,10 +209,8 @@ func (r *EnumRule) Validate(value any) *ValidationError {
 	if !ok {
 		return nil
 	}
-	for _, a := range r.allowed {
-		if s == a {
-			return nil
-		}
+	if slices.Contains(r.allowed, s) {
+		return nil
 	}
 	return &ValidationError{
 		Rule:    r.Name(),
