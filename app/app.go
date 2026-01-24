@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/dotcommander/agent-framework/client"
-	"github.com/dotcommander/agent-framework/config"
-	"github.com/dotcommander/agent-framework/output"
-	"github.com/dotcommander/agent-framework/tools"
+	"github.com/dotcommander/agent/client"
+	"github.com/dotcommander/agent/config"
+	"github.com/dotcommander/agent/output"
+	"github.com/dotcommander/agent/tools"
 	"github.com/spf13/cobra"
 )
 
