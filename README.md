@@ -52,14 +52,77 @@ go get github.com/dotcommander/agent
 
 ## Quick Start
 
-### Simple CLI Application
+### One-Liner (Simplest)
+
+```go
+package main
+
+import "github.com/dotcommander/agent-framework/agent"
+
+func main() {
+    // Start an interactive agent in 1 line
+    agent.Run("You are a helpful coding assistant.")
+}
+```
+
+### Single Query
+
+```go
+response, err := agent.Query(ctx, "What is 2+2?")
+```
+
+### Typed Responses
+
+```go
+type CodeReview struct {
+    Summary string   `json:"summary"`
+    Issues  []string `json:"issues"`
+    Score   int      `json:"score"`
+}
+
+review, err := agent.QueryAs[CodeReview](ctx, "Review this code...")
+fmt.Printf("Score: %d\n", review.Score)
+```
+
+### Fluent Builder
+
+```go
+agent.New("code-reviewer").
+    Model("opus").              // Short: "opus", "sonnet", "haiku"
+    System("You review code.").
+    Budget(5.00).               // $5 USD limit
+    MaxTurns(20).
+    OnPreToolUse(func(tool string, _ map[string]any) bool {
+        return tool != "Bash"   // Block Bash
+    }).
+    Run()
+```
+
+### Type-Safe Tools
+
+```go
+type SearchInput struct {
+    Query string `json:"query" desc:"Search query"`
+    Limit int    `json:"limit" max:"100"`
+}
+
+searchTool := agent.Tool("search", "Search codebase",
+    func(ctx context.Context, in SearchInput) ([]string, error) {
+        return doSearch(in.Query, in.Limit), nil
+    },
+)
+
+agent.New("researcher").Tool(searchTool).Run()
+```
+
+### Full Control (app package)
 
 ```go
 package main
 
 import (
     "log"
-    "github.com/dotcommander/agent/app"
+    "github.com/dotcommander/agent-framework/app"
 )
 
 func main() {
@@ -417,6 +480,145 @@ For testing without API calls.
 
 ```go
 app.WithProvider("synthetic")
+```
+
+## Common Patterns
+
+These patterns address common DX needs. Many developers miss these existing features.
+
+### Retry with Exponential Backoff
+
+The client supports automatic retry with configurable backoff:
+
+```go
+import "github.com/dotcommander/agent-framework/client"
+
+// Use defaults: 3 retries, 500ms initial, 2x backoff, 0.5 jitter
+c, _ := client.New(ctx, sdkOpts,
+    client.WithRetry(nil),
+)
+
+// Or customize
+c, _ := client.New(ctx, sdkOpts,
+    client.WithRetry(&client.RetryConfig{
+        MaxRetries:          5,
+        InitialInterval:     time.Second,
+        MaxInterval:         30 * time.Second,
+        Multiplier:          2.0,
+        RandomizationFactor: 0.5,
+    }),
+)
+```
+
+### Typed Error Handling
+
+Use `errors.Is` and `errors.As` for specific error handling:
+
+```go
+import "github.com/dotcommander/agent-framework/client"
+
+response, err := c.Query(ctx, prompt)
+if err != nil {
+    // Check error types
+    if errors.Is(err, client.ErrRateLimited) {
+        // Wait and retry
+    }
+    if errors.Is(err, client.ErrMaxRetriesExceeded) {
+        // All retries exhausted
+    }
+    if errors.Is(err, client.ErrCircuitOpen) {
+        // Service unavailable, circuit breaker open
+    }
+
+    // Extract detailed error info
+    var rlErr *client.RateLimitError
+    if errors.As(err, &rlErr) {
+        time.Sleep(rlErr.RetryAfter)
+    }
+
+    var srvErr *client.ServerError
+    if errors.As(err, &srvErr) {
+        log.Printf("Server error %d: %s", srvErr.StatusCode, srvErr.Message)
+    }
+}
+```
+
+### Circuit Breaker
+
+Prevent cascading failures with circuit breaker protection:
+
+```go
+import (
+    "github.com/dotcommander/agent-framework/client"
+    "github.com/sony/gobreaker"
+)
+
+c, _ := client.New(ctx, sdkOpts,
+    client.WithCircuitBreaker(&client.CircuitBreakerConfig{
+        MaxFailures:   5,              // Open after 5 consecutive failures
+        Timeout:       30 * time.Second, // Half-open after 30s
+        ResetInterval: 60 * time.Second, // Reset counters after 60s
+    }),
+)
+
+// Check circuit state before requests
+if c.CircuitBreakerState() == gobreaker.StateOpen {
+    // Service unavailable, use fallback
+}
+```
+
+### All Resilience Features
+
+Enable circuit breaker, retry, and rate limiting together:
+
+```go
+c, _ := client.New(ctx, sdkOpts,
+    client.WithResilience(), // Enables all with defaults
+)
+```
+
+### Context Compaction
+
+Manage long conversations by summarizing older messages:
+
+```go
+import "github.com/dotcommander/agent-framework/client"
+
+// LLM-based compaction (summarizes old messages, keeps recent N)
+compactor := client.NewSimpleCompactor(client.CompactorConfig{
+    MaxTokens:        100000,
+    CompactThreshold: 0.8,  // Compact at 80% capacity
+    KeepRecent:       5,    // Keep last 5 messages verbatim
+})
+
+// Check if compaction needed
+if compactor.ShouldCompact(messages, currentTokenCount) {
+    messages, _ = compactor.Compact(ctx, messages, summarizer)
+}
+
+// Or use simple sliding window (no LLM needed)
+windowCompactor := client.NewSlidingWindowCompactor(20) // Keep last 20 messages
+```
+
+### Subagent Error Handling
+
+Handle errors when running parallel subagents:
+
+```go
+import "github.com/dotcommander/agent-framework/app"
+
+results, err := manager.RunAll(ctx)
+if err != nil {
+    if errors.Is(err, app.ErrAllAgentsFailed) {
+        // All subagents failed
+    }
+    if errors.Is(err, app.ErrMaxSubagentsReached) {
+        // Too many concurrent subagents
+    }
+    if errors.Is(err, app.ErrTokenBudgetExhausted) {
+        // Token quota exceeded
+    }
+}
 ```
 
 ## License
