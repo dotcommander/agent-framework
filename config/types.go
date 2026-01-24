@@ -17,19 +17,19 @@ type AppConfig struct {
 // ProviderConfig contains provider-specific settings.
 type ProviderConfig struct {
 	// Provider is the AI provider to use (anthropic, zai, synthetic).
-	Provider string
+	Provider string `json:"provider"`
 
 	// Anthropic settings
-	AnthropicAPIKey string
-	AnthropicModel  string
+	AnthropicAPIKey string `json:"-"` // Excluded from JSON serialization for security
+	AnthropicModel  string `json:"anthropic_model,omitempty"`
 
 	// ZAI settings
-	ZAIAPIKey  string
-	ZAIModel   string
-	ZAIBaseURL string
+	ZAIAPIKey  string `json:"-"` // Excluded from JSON serialization for security
+	ZAIModel   string `json:"zai_model,omitempty"`
+	ZAIBaseURL string `json:"zai_base_url,omitempty"`
 
 	// Synthetic settings (for testing)
-	SyntheticResponse string
+	SyntheticResponse string `json:"synthetic_response,omitempty"`
 }
 
 // ClientConfig wraps SDK client options with additional agent-specific configuration.

@@ -1,10 +1,18 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
+)
+
+// MCP-related limits for security.
+const (
+	// DefaultMaxJSONSize is the maximum size for JSON payloads (1MB).
+	DefaultMaxJSONSize = 1 * 1024 * 1024
 )
 
 // MCPServer represents an MCP (Model Context Protocol) server.
@@ -14,6 +22,7 @@ type MCPServer struct {
 	description string
 	tools       map[string]*Tool
 	resources   map[string]*Resource
+	maxJSONSize int64 // Maximum size for JSON payloads
 	mu          sync.RWMutex
 }
 
@@ -43,13 +52,21 @@ func WithMCPVersion(version string) MCPServerOption {
 	}
 }
 
+// WithMCPMaxJSONSize sets the maximum JSON payload size.
+func WithMCPMaxJSONSize(maxSize int64) MCPServerOption {
+	return func(s *MCPServer) {
+		s.maxJSONSize = maxSize
+	}
+}
+
 // NewMCPServer creates a new MCP server.
 func NewMCPServer(name string, opts ...MCPServerOption) *MCPServer {
 	s := &MCPServer{
-		name:      name,
-		version:   "1.0.0",
-		tools:     make(map[string]*Tool),
-		resources: make(map[string]*Resource),
+		name:        name,
+		version:     "1.0.0",
+		tools:       make(map[string]*Tool),
+		resources:   make(map[string]*Resource),
+		maxJSONSize: DefaultMaxJSONSize,
 	}
 
 	for _, opt := range opts {
@@ -57,6 +74,33 @@ func NewMCPServer(name string, opts ...MCPServerOption) *MCPServer {
 	}
 
 	return s
+}
+
+// DecodeJSONSafe decodes JSON with size limits to prevent memory exhaustion.
+func DecodeJSONSafe(data []byte, v any, maxSize int64) error {
+	if int64(len(data)) > maxSize {
+		return fmt.Errorf("JSON payload exceeds maximum size of %d bytes", maxSize)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields() // Optional: stricter parsing
+
+	return decoder.Decode(v)
+}
+
+// DecodeJSONFromReaderSafe decodes JSON from a reader with size limits.
+func DecodeJSONFromReaderSafe(r io.Reader, v any, maxSize int64) error {
+	limitedReader := io.LimitReader(r, maxSize+1)
+	data, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return fmt.Errorf("read JSON: %w", err)
+	}
+
+	if int64(len(data)) > maxSize {
+		return fmt.Errorf("JSON payload exceeds maximum size of %d bytes", maxSize)
+	}
+
+	return json.Unmarshal(data, v)
 }
 
 // RegisterTool adds a tool to the server.
@@ -246,7 +290,8 @@ func (s *MCPServer) handleToolsCall(ctx context.Context, req *MCPRequest) *MCPRe
 		Arguments json.RawMessage `json:"arguments"`
 	}
 
-	if err := json.Unmarshal(req.Params, &params); err != nil {
+	// Use safe JSON decoding with size limits
+	if err := DecodeJSONSafe(req.Params, &params, s.maxJSONSize); err != nil {
 		return &MCPResponse{
 			Error: &Error{
 				Code:    -32602,
@@ -267,10 +312,10 @@ func (s *MCPServer) handleToolsCall(ctx context.Context, req *MCPRequest) *MCPRe
 		}
 	}
 
-	// Unmarshal arguments to map
+	// Unmarshal arguments to map with size limits
 	var args map[string]any
 	if len(params.Arguments) > 0 {
-		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+		if err := DecodeJSONSafe(params.Arguments, &args, s.maxJSONSize); err != nil {
 			return &MCPResponse{
 				Error: &Error{
 					Code:    -32602,
@@ -281,7 +326,8 @@ func (s *MCPServer) handleToolsCall(ctx context.Context, req *MCPRequest) *MCPRe
 		}
 	}
 
-	result, err := tool.Invoke(ctx, args)
+	// Invoke tool with panic recovery
+	result, err := s.safeInvoke(ctx, tool, args)
 	if err != nil {
 		return &MCPResponse{
 			Error: &Error{
@@ -303,6 +349,18 @@ func (s *MCPServer) handleToolsCall(ctx context.Context, req *MCPRequest) *MCPRe
 		},
 		ID: req.ID,
 	}
+}
+
+// safeInvoke invokes a tool with panic recovery.
+func (s *MCPServer) safeInvoke(ctx context.Context, tool *Tool, args map[string]any) (result any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("tool panicked: %v", r)
+			result = nil
+		}
+	}()
+
+	return tool.Invoke(ctx, args)
 }
 
 func (s *MCPServer) handleResourcesList(req *MCPRequest) *MCPResponse {
