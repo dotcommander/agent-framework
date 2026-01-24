@@ -3,6 +3,7 @@ package output
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 )
 
@@ -26,12 +27,34 @@ func (d *Dispatcher) RegisterFormatter(f Formatter) {
 }
 
 // Format formats the result using the specified format.
+// If formatting fails, falls back to text format and logs a warning.
 func (d *Dispatcher) Format(ctx context.Context, result any, format Format) (string, error) {
 	f, ok := d.formatters[format]
 	if !ok {
 		return "", fmt.Errorf("unknown format: %s", format)
 	}
-	return f.Format(ctx, result)
+
+	formatted, err := f.Format(ctx, result)
+	if err != nil {
+		// Fallback to text format
+		log.Printf("WARNING: %s formatting failed (%v), falling back to text format", format, err)
+
+		textFormatter, ok := d.formatters[FormatText]
+		if !ok {
+			// No text formatter available, return original error
+			return "", err
+		}
+
+		textFormatted, textErr := textFormatter.Format(ctx, result)
+		if textErr != nil {
+			// Text formatting also failed, return original error
+			return "", fmt.Errorf("formatting failed: %w (text fallback also failed: %v)", err, textErr)
+		}
+
+		return textFormatted, nil
+	}
+
+	return formatted, nil
 }
 
 // Write writes the formatted output to the specified destination.

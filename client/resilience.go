@@ -187,6 +187,7 @@ func (r *adaptiveRateLimiter) recordRateLimit(retryAfter time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	isFirstLimit := r.lastRateLimit.IsZero()
 	r.lastRateLimit = time.Now()
 
 	// Use server-provided retry-after if available
@@ -195,7 +196,13 @@ func (r *adaptiveRateLimiter) recordRateLimit(retryAfter time.Duration) {
 		return
 	}
 
-	// Otherwise increase backoff exponentially
+	// First rate limit uses initial backoff, subsequent ones escalate
+	if isFirstLimit {
+		// Already at initial backoff, no change needed
+		return
+	}
+
+	// Increase backoff exponentially for subsequent rate limits
 	r.currentBackoff = time.Duration(float64(r.currentBackoff) * r.config.BackoffMultiplier)
 	if r.currentBackoff > r.config.MaxBackoff {
 		r.currentBackoff = r.config.MaxBackoff
@@ -355,6 +362,11 @@ func (w *ResilienceWrapper) isRetryable(err error) bool {
 		return false
 	}
 
+	// Context errors are not retryable (check first - DeadlineExceeded implements net.Error)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
 	// Rate limit errors are retryable
 	var rateErr *RateLimitError
 	if errors.As(err, &rateErr) {
@@ -370,11 +382,6 @@ func (w *ResilienceWrapper) isRetryable(err error) bool {
 	// Network errors are retryable
 	if isNetworkError(err) {
 		return true
-	}
-
-	// Context errors are not retryable
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
 	}
 
 	return false

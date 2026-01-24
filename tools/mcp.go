@@ -4,10 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"runtime/debug"
 	"sync"
 )
+
+// ErrToolConflict is returned when multiple servers provide tools with the same name.
+var ErrToolConflict = errors.New("tool name conflict")
 
 // MCP-related limits for security.
 const (
@@ -17,13 +23,14 @@ const (
 
 // MCPServer represents an MCP (Model Context Protocol) server.
 type MCPServer struct {
-	name        string
-	version     string
-	description string
-	tools       map[string]*Tool
-	resources   map[string]*Resource
-	maxJSONSize int64 // Maximum size for JSON payloads
-	mu          sync.RWMutex
+	name            string
+	version         string
+	description     string
+	protocolVersion string // MCP protocol version
+	tools           map[string]*Tool
+	resources       map[string]*Resource
+	maxJSONSize     int64 // Maximum size for JSON payloads
+	mu              sync.RWMutex
 }
 
 // Resource represents an MCP resource.
@@ -59,14 +66,22 @@ func WithMCPMaxJSONSize(maxSize int64) MCPServerOption {
 	}
 }
 
+// WithProtocolVersion sets the MCP protocol version.
+func WithProtocolVersion(version string) MCPServerOption {
+	return func(s *MCPServer) {
+		s.protocolVersion = version
+	}
+}
+
 // NewMCPServer creates a new MCP server.
 func NewMCPServer(name string, opts ...MCPServerOption) *MCPServer {
 	s := &MCPServer{
-		name:        name,
-		version:     "1.0.0",
-		tools:       make(map[string]*Tool),
-		resources:   make(map[string]*Resource),
-		maxJSONSize: DefaultMaxJSONSize,
+		name:            name,
+		version:         "1.0.0",
+		protocolVersion: "2024-11-05", // Default MCP protocol version
+		tools:           make(map[string]*Tool),
+		resources:       make(map[string]*Resource),
+		maxJSONSize:     DefaultMaxJSONSize,
 	}
 
 	for _, opt := range opts {
@@ -258,7 +273,7 @@ func (s *MCPServer) handleInitialize(req *MCPRequest) *MCPResponse {
 	return &MCPResponse{
 		Result: map[string]any{
 			"serverInfo":      s.GetServerInfo(),
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": s.protocolVersion,
 		},
 		ID: req.ID,
 	}
@@ -355,6 +370,8 @@ func (s *MCPServer) handleToolsCall(ctx context.Context, req *MCPRequest) *MCPRe
 func (s *MCPServer) safeInvoke(ctx context.Context, tool *Tool, args map[string]any) (result any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			// Log stack trace for debugging before converting to error
+			log.Printf("Tool %s panicked: %v\n%s", tool.Name, r, debug.Stack())
 			err = fmt.Errorf("tool panicked: %v", r)
 			result = nil
 		}
@@ -527,19 +544,49 @@ func (c *MCPClient) Close() error {
 	return nil
 }
 
+// ConflictStrategy defines how to handle tool name conflicts.
+type ConflictStrategy int
+
+const (
+	// ConflictError returns an error on conflict (default).
+	ConflictError ConflictStrategy = iota
+	// ConflictFirstWins keeps the first tool, ignores later ones.
+	ConflictFirstWins
+	// ConflictLastWins overwrites with the latest tool (legacy behavior).
+	ConflictLastWins
+)
+
 // ToolDiscovery discovers tools from multiple MCP servers.
 type ToolDiscovery struct {
-	clients []*MCPClient
-	tools   map[string]*Tool
-	mu      sync.RWMutex
+	clients          []*MCPClient
+	tools            map[string]*Tool
+	toolSources      map[string]string // tool name -> server URL
+	conflictStrategy ConflictStrategy
+	mu               sync.RWMutex
+}
+
+// DiscoveryOption configures ToolDiscovery.
+type DiscoveryOption func(*ToolDiscovery)
+
+// WithConflictStrategy sets the strategy for handling tool name conflicts.
+func WithConflictStrategy(strategy ConflictStrategy) DiscoveryOption {
+	return func(d *ToolDiscovery) {
+		d.conflictStrategy = strategy
+	}
 }
 
 // NewToolDiscovery creates a new tool discovery service.
-func NewToolDiscovery() *ToolDiscovery {
-	return &ToolDiscovery{
-		clients: make([]*MCPClient, 0),
-		tools:   make(map[string]*Tool),
+func NewToolDiscovery(opts ...DiscoveryOption) *ToolDiscovery {
+	d := &ToolDiscovery{
+		clients:          make([]*MCPClient, 0),
+		tools:            make(map[string]*Tool),
+		toolSources:      make(map[string]string),
+		conflictStrategy: ConflictError, // Default: error on conflict
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 // AddServer adds an MCP server to discover tools from.
@@ -561,7 +608,19 @@ func (d *ToolDiscovery) Discover(ctx context.Context) error {
 		}
 
 		for _, tool := range tools {
+			if existingSource, exists := d.toolSources[tool.Name]; exists {
+				switch d.conflictStrategy {
+				case ConflictError:
+					return fmt.Errorf("%w: tool %q provided by both %q and %q",
+						ErrToolConflict, tool.Name, existingSource, client.serverURL)
+				case ConflictFirstWins:
+					continue // Keep existing tool
+				case ConflictLastWins:
+					// Fall through to overwrite
+				}
+			}
 			d.tools[tool.Name] = tool
+			d.toolSources[tool.Name] = client.serverURL
 		}
 	}
 
@@ -578,6 +637,13 @@ func (d *ToolDiscovery) GetTools() []*Tool {
 		tools = append(tools, tool)
 	}
 	return tools
+}
+
+// GetToolSource returns the server URL that provided the named tool.
+func (d *ToolDiscovery) GetToolSource(name string) string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.toolSources[name]
 }
 
 // Close closes all client connections.
