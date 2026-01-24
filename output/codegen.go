@@ -309,71 +309,86 @@ func generateDiff(filePath, oldContent, newContent string) FileDiff {
 	oldLines := strings.Split(oldContent, "\n")
 	newLines := strings.Split(newContent, "\n")
 
-	diff := FileDiff{
-		FilePath:   filePath,
-		ChangeType: "modify",
-		Lines:      make([]DiffLine, 0),
-	}
-
 	// Enforce input size limits to prevent memory exhaustion
-	truncated := false
+	inputTruncated := false
 	if len(oldLines) > MaxDiffLines {
 		oldLines = oldLines[:MaxDiffLines]
-		truncated = true
+		inputTruncated = true
 	}
 	if len(newLines) > MaxDiffLines {
 		newLines = newLines[:MaxDiffLines]
-		truncated = true
+		inputTruncated = true
 	}
 
-	// Simple LCS-based diff
-	lcs := longestCommonSubsequence(oldLines, newLines)
+	// Compute LCS and build diff lines
+	lcs := computeLCS(oldLines, newLines)
+	lines, stats, outputTruncated := buildDiffLines(oldLines, newLines, lcs, MaxDiffOutputLines)
 
-	// Track if we've hit output limit
-	outputLimitReached := false
+	// Add truncation notice if limits were hit
+	if inputTruncated || outputTruncated {
+		lines = append(lines, DiffLine{
+			Type:    "context",
+			Content: "... (diff truncated due to size limits)",
+		})
+	}
+
+	return FileDiff{
+		FilePath:   filePath,
+		ChangeType: "modify",
+		Lines:      lines,
+		Stats:      stats,
+	}
+}
+
+// buildDiffLines constructs diff lines by comparing old/new against LCS.
+// Returns the diff lines, statistics, and whether output was truncated.
+func buildDiffLines(oldLines, newLines, lcs []string, limit int) ([]DiffLine, DiffStats, bool) {
+	lines := make([]DiffLine, 0)
+	stats := DiffStats{}
+	truncated := false
 
 	oldIdx, newIdx, lcsIdx := 0, 0, 0
 
-	// Helper to check output limit
-	checkLimit := func() bool {
-		if len(diff.Lines) >= MaxDiffOutputLines {
-			outputLimitReached = true
+	// Helper to check if output limit reached
+	atLimit := func() bool {
+		if len(lines) >= limit {
+			truncated = true
 			return true
 		}
 		return false
 	}
 
 	for oldIdx < len(oldLines) || newIdx < len(newLines) {
-		if checkLimit() {
+		if atLimit() {
 			break
 		}
 
 		if lcsIdx < len(lcs) {
 			// Output removals (old lines not in LCS)
-			for oldIdx < len(oldLines) && oldLines[oldIdx] != lcs[lcsIdx] && !checkLimit() {
-				diff.Lines = append(diff.Lines, DiffLine{
+			for oldIdx < len(oldLines) && oldLines[oldIdx] != lcs[lcsIdx] && !atLimit() {
+				lines = append(lines, DiffLine{
 					Type:    "remove",
 					LineNum: oldIdx + 1,
 					Content: oldLines[oldIdx],
 				})
-				diff.Stats.Deletions++
+				stats.Deletions++
 				oldIdx++
 			}
 
 			// Output additions (new lines not in LCS)
-			for newIdx < len(newLines) && newLines[newIdx] != lcs[lcsIdx] && !checkLimit() {
-				diff.Lines = append(diff.Lines, DiffLine{
+			for newIdx < len(newLines) && newLines[newIdx] != lcs[lcsIdx] && !atLimit() {
+				lines = append(lines, DiffLine{
 					Type:    "add",
 					LineNum: newIdx + 1,
 					Content: newLines[newIdx],
 				})
-				diff.Stats.Additions++
+				stats.Additions++
 				newIdx++
 			}
 
 			// Output context (matching line)
-			if oldIdx < len(oldLines) && newIdx < len(newLines) && !checkLimit() {
-				diff.Lines = append(diff.Lines, DiffLine{
+			if oldIdx < len(oldLines) && newIdx < len(newLines) && !atLimit() {
+				lines = append(lines, DiffLine{
 					Type:    "context",
 					LineNum: newIdx + 1,
 					Content: newLines[newIdx],
@@ -384,41 +399,33 @@ func generateDiff(filePath, oldContent, newContent string) FileDiff {
 			}
 		} else {
 			// No more LCS, output remaining as removals/additions
-			for oldIdx < len(oldLines) && !checkLimit() {
-				diff.Lines = append(diff.Lines, DiffLine{
+			for oldIdx < len(oldLines) && !atLimit() {
+				lines = append(lines, DiffLine{
 					Type:    "remove",
 					LineNum: oldIdx + 1,
 					Content: oldLines[oldIdx],
 				})
-				diff.Stats.Deletions++
+				stats.Deletions++
 				oldIdx++
 			}
-			for newIdx < len(newLines) && !checkLimit() {
-				diff.Lines = append(diff.Lines, DiffLine{
+			for newIdx < len(newLines) && !atLimit() {
+				lines = append(lines, DiffLine{
 					Type:    "add",
 					LineNum: newIdx + 1,
 					Content: newLines[newIdx],
 				})
-				diff.Stats.Additions++
+				stats.Additions++
 				newIdx++
 			}
 		}
 	}
 
-	// Add truncation notice if limits were hit
-	if truncated || outputLimitReached {
-		diff.Lines = append(diff.Lines, DiffLine{
-			Type:    "context",
-			Content: "... (diff truncated due to size limits)",
-		})
-	}
-
-	diff.Stats.Changes = diff.Stats.Additions + diff.Stats.Deletions
-	return diff
+	stats.Changes = stats.Additions + stats.Deletions
+	return lines, stats, truncated
 }
 
-// longestCommonSubsequence finds LCS of two string slices.
-func longestCommonSubsequence(a, b []string) []string {
+// computeLCS finds the longest common subsequence between two slices of strings.
+func computeLCS(a, b []string) []string {
 	m, n := len(a), len(b)
 
 	// DP table
