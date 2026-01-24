@@ -124,10 +124,19 @@ type LoopConfig struct {
 	// MinScore minimum verification score to continue.
 	MinScore float64
 
+	// StuckDetection enables automatic stuck pattern detection.
+	// If nil, stuck detection is disabled.
+	StuckDetection *StuckConfig
+
 	// Hooks for extensibility
 	OnIterationStart func(state *LoopState)
 	OnIterationEnd   func(state *LoopState)
 	OnError          func(err error, state *LoopState)
+
+	// OnStuckPattern is called when a stuck pattern is detected.
+	// Return true to continue the loop, false to stop.
+	// If nil and a pattern is detected, the loop stops with an error.
+	OnStuckPattern func(pattern *StuckPattern, state *LoopState) bool
 }
 
 // DefaultLoopConfig returns sensible defaults.
@@ -144,8 +153,9 @@ func DefaultLoopConfig() *LoopConfig {
 
 // LoopRunner executes an agent loop.
 type LoopRunner struct {
-	loop   AgentLoop
-	config *LoopConfig
+	loop          AgentLoop
+	config        *LoopConfig
+	stuckDetector *StuckDetector
 
 	mu            sync.Mutex
 	shutdownHooks []ShutdownHook
@@ -156,10 +166,15 @@ func NewLoopRunner(loop AgentLoop, config *LoopConfig) *LoopRunner {
 	if config == nil {
 		config = DefaultLoopConfig()
 	}
-	return &LoopRunner{
+	r := &LoopRunner{
 		loop:   loop,
 		config: config,
 	}
+	// Initialize stuck detector if configured
+	if config.StuckDetection != nil {
+		r.stuckDetector = NewStuckDetector(config.StuckDetection)
+	}
+	return r
 }
 
 // OnShutdown registers a hook to be called during graceful shutdown.
@@ -303,6 +318,36 @@ func (r *LoopRunner) Run(ctx context.Context) (state *LoopState, err error) {
 			}
 		}
 		state.LastVerify = feedback
+
+		// Step 4b: Check for stuck patterns
+		if r.stuckDetector != nil {
+			var stuckPattern *StuckPattern
+			// Use "loop" as task ID to track patterns across all iterations
+			const taskID = "loop"
+
+			if feedback != nil && !feedback.Valid {
+				// Verification failed - record as error
+				errMsg := "verification failed"
+				if len(feedback.Issues) > 0 {
+					errMsg = feedback.Issues[0]
+				}
+				stuckPattern = r.stuckDetector.RecordError(taskID, errMsg)
+			} else if feedback != nil && feedback.Valid {
+				// Verification passed
+				stuckPattern = r.stuckDetector.RecordResult(taskID, true)
+			}
+
+			if stuckPattern != nil {
+				if r.config.OnStuckPattern != nil {
+					if !r.config.OnStuckPattern(stuckPattern, state) {
+						return state, fmt.Errorf("stuck pattern detected: %s", stuckPattern.Message)
+					}
+				} else {
+					// No handler, stop by default
+					return state, fmt.Errorf("stuck pattern detected: %s", stuckPattern.Message)
+				}
+			}
+		}
 
 		// Hook: iteration end
 		if r.config.OnIterationEnd != nil {

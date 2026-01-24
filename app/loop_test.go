@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -935,4 +936,166 @@ func TestConcurrentOnShutdownRegistration(t *testing.T) {
 	runner.mu.Unlock()
 
 	assert.Equal(t, 10, hookCount)
+}
+
+// TestLoopRunnerStuckDetectionRepeatError tests stuck detection for repeated errors.
+func TestLoopRunnerStuckDetectionRepeatError(t *testing.T) {
+	t.Parallel()
+
+	loop := NewSimpleLoop(
+		WithVerifyFunc(func(ctx context.Context, state *LoopState) (*Feedback, error) {
+			// Always fail with same issue
+			return &Feedback{Valid: false, Issues: []string{"build failed: missing import"}}, nil
+		}),
+		WithContinueFunc(func(state *LoopState) bool {
+			return true // Always continue
+		}),
+	)
+
+	runner := NewLoopRunner(loop, &LoopConfig{
+		MaxIterations:  10,
+		StuckDetection: DefaultStuckConfig(),
+	})
+
+	state, err := runner.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stuck pattern detected")
+	assert.Contains(t, err.Error(), "same error 3 times")
+	// Should stop at iteration 3 (when repeat detected)
+	assert.Equal(t, 3, state.Iteration)
+}
+
+// TestLoopRunnerStuckDetectionOscillation tests stuck detection for oscillating results.
+func TestLoopRunnerStuckDetectionOscillation(t *testing.T) {
+	t.Parallel()
+
+	iteration := 0
+	loop := NewSimpleLoop(
+		WithVerifyFunc(func(ctx context.Context, state *LoopState) (*Feedback, error) {
+			iteration++
+			// Alternate between pass and fail
+			passed := iteration%2 == 0
+			return &Feedback{Valid: passed, Issues: []string{"test failed"}}, nil
+		}),
+		WithContinueFunc(func(state *LoopState) bool {
+			return true
+		}),
+	)
+
+	runner := NewLoopRunner(loop, &LoopConfig{
+		MaxIterations:  10,
+		StuckDetection: DefaultStuckConfig(),
+	})
+
+	state, err := runner.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stuck pattern detected")
+	assert.Contains(t, err.Error(), "oscillating")
+	// Should stop at iteration 4 (when oscillation detected)
+	assert.Equal(t, 4, state.Iteration)
+}
+
+// TestLoopRunnerStuckDetectionWithHandler tests OnStuckPattern hook.
+func TestLoopRunnerStuckDetectionWithHandler(t *testing.T) {
+	t.Parallel()
+
+	var capturedPattern *StuckPattern
+	continueLoop := true
+
+	loop := NewSimpleLoop(
+		WithVerifyFunc(func(ctx context.Context, state *LoopState) (*Feedback, error) {
+			return &Feedback{Valid: false, Issues: []string{"same error"}}, nil
+		}),
+		WithContinueFunc(func(state *LoopState) bool {
+			return true
+		}),
+	)
+
+	runner := NewLoopRunner(loop, &LoopConfig{
+		MaxIterations:  10,
+		StuckDetection: DefaultStuckConfig(),
+		OnStuckPattern: func(pattern *StuckPattern, state *LoopState) bool {
+			capturedPattern = pattern
+			return continueLoop
+		},
+	})
+
+	// First: handler returns true, loop continues until max iterations
+	_, err := runner.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max iterations")
+	require.NotNil(t, capturedPattern)
+	assert.Equal(t, PatternRepeatAttempt, capturedPattern.Type)
+
+	// Second: handler returns false, loop stops immediately
+	continueLoop = false
+	capturedPattern = nil
+
+	runner2 := NewLoopRunner(loop, &LoopConfig{
+		MaxIterations:  10,
+		StuckDetection: DefaultStuckConfig(),
+		OnStuckPattern: func(pattern *StuckPattern, state *LoopState) bool {
+			capturedPattern = pattern
+			return continueLoop
+		},
+	})
+
+	state, err := runner2.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stuck pattern detected")
+	assert.Equal(t, 3, state.Iteration)
+}
+
+// TestLoopRunnerStuckDetectionDisabled tests that nil StuckDetection disables detection.
+func TestLoopRunnerStuckDetectionDisabled(t *testing.T) {
+	t.Parallel()
+
+	loop := NewSimpleLoop(
+		WithVerifyFunc(func(ctx context.Context, state *LoopState) (*Feedback, error) {
+			return &Feedback{Valid: false, Issues: []string{"same error"}}, nil
+		}),
+		WithContinueFunc(func(state *LoopState) bool {
+			return state.Iteration < 5
+		}),
+	)
+
+	runner := NewLoopRunner(loop, &LoopConfig{
+		MaxIterations:  10,
+		StuckDetection: nil, // Disabled
+	})
+
+	state, err := runner.Run(context.Background())
+	require.NoError(t, err)
+	// Should complete normally without stuck detection
+	assert.Equal(t, 5, state.Iteration)
+}
+
+// TestLoopRunnerStuckDetectionNoFalsePositive tests that different errors don't trigger.
+func TestLoopRunnerStuckDetectionNoFalsePositive(t *testing.T) {
+	t.Parallel()
+
+	iteration := 0
+	loop := NewSimpleLoop(
+		WithVerifyFunc(func(ctx context.Context, state *LoopState) (*Feedback, error) {
+			iteration++
+			// Different error each time
+			return &Feedback{
+				Valid:  false,
+				Issues: []string{fmt.Sprintf("error %d", iteration)},
+			}, nil
+		}),
+		WithContinueFunc(func(state *LoopState) bool {
+			return state.Iteration < 5
+		}),
+	)
+
+	runner := NewLoopRunner(loop, &LoopConfig{
+		MaxIterations:  10,
+		StuckDetection: DefaultStuckConfig(),
+	})
+
+	state, err := runner.Run(context.Background())
+	require.NoError(t, err)
+	// Should complete without stuck detection (different errors)
+	assert.Equal(t, 5, state.Iteration)
 }
