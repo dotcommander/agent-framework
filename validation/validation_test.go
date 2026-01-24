@@ -3,6 +3,7 @@ package validation
 import (
 	"testing"
 
+	"github.com/dotcommander/agent-framework/internal/conv"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -712,7 +713,7 @@ func TestToFloat64(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := toFloat64(tt.value)
+			got, ok := conv.ToFloat64(tt.value)
 			assert.Equal(t, tt.wantOk, ok)
 			if tt.wantOk {
 				assert.InDelta(t, tt.want, got, 0.001)

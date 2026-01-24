@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/dotcommander/agent-framework/internal/conv"
 )
 
 // ValidationError represents a validation failure.
@@ -239,7 +241,7 @@ func (r *RangeRule) Name() string { return "range" }
 
 func (r *RangeRule) Validate(value any) *ValidationError {
 	v := extractField(value, r.field)
-	n, ok := toFloat64(v)
+	n, ok := conv.ToFloat64(v)
 	if !ok {
 		return nil
 	}
@@ -353,23 +355,6 @@ func isEmpty(value any) bool {
 		return len(v) == 0
 	}
 	return false
-}
-
-// toFloat64 converts a value to float64.
-func toFloat64(value any) (float64, bool) {
-	switch v := value.(type) {
-	case float64:
-		return v, true
-	case float32:
-		return float64(v), true
-	case int:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	case int32:
-		return float64(v), true
-	}
-	return 0, false
 }
 
 // getLength returns the length of a string or slice.
