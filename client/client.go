@@ -5,7 +5,66 @@ import (
 	"context"
 
 	"github.com/dotcommander/agent-sdk-go/claude"
+	"github.com/sony/gobreaker"
 )
+
+// ClientOption configures a Client.
+type ClientOption func(*clientOptions)
+
+type clientOptions struct {
+	resilienceConfig *ResilienceConfig
+}
+
+// WithCircuitBreaker enables circuit breaker protection.
+// Opens after consecutive failures, half-opens after timeout.
+func WithCircuitBreaker(cfg *CircuitBreakerConfig) ClientOption {
+	return func(o *clientOptions) {
+		if o.resilienceConfig == nil {
+			o.resilienceConfig = &ResilienceConfig{}
+		}
+		if cfg == nil {
+			cfg = DefaultCircuitBreakerConfig()
+		}
+		o.resilienceConfig.CircuitBreaker = cfg
+	}
+}
+
+// WithRetry enables retry with exponential backoff for transient failures.
+func WithRetry(cfg *RetryConfig) ClientOption {
+	return func(o *clientOptions) {
+		if o.resilienceConfig == nil {
+			o.resilienceConfig = &ResilienceConfig{}
+		}
+		if cfg == nil {
+			cfg = DefaultRetryConfig()
+		}
+		o.resilienceConfig.Retry = cfg
+	}
+}
+
+// WithRateLimiter enables adaptive rate limiting with 429 detection.
+func WithRateLimiter(cfg *RateLimiterConfig) ClientOption {
+	return func(o *clientOptions) {
+		if o.resilienceConfig == nil {
+			o.resilienceConfig = &ResilienceConfig{}
+		}
+		if cfg == nil {
+			cfg = DefaultRateLimiterConfig()
+		}
+		o.resilienceConfig.RateLimiter = cfg
+	}
+}
+
+// WithResilience enables all resilience features with default configs.
+func WithResilience() ClientOption {
+	return func(o *clientOptions) {
+		o.resilienceConfig = &ResilienceConfig{
+			CircuitBreaker: DefaultCircuitBreakerConfig(),
+			Retry:          DefaultRetryConfig(),
+			RateLimiter:    DefaultRateLimiterConfig(),
+		}
+	}
+}
 
 // Message represents a message from the AI.
 type Message = claude.Message
@@ -38,13 +97,20 @@ type Client interface {
 
 // clientImpl implements the Client interface.
 type clientImpl struct {
-	claude    claude.Client
-	connected bool
+	claude     claude.Client
+	connected  bool
+	resilience *ResilienceWrapper
 }
 
 // New creates a new Client with the given SDK options.
-func New(ctx context.Context, opts ...claude.ClientOption) (Client, error) {
-	c, err := claude.NewClient(opts...)
+func New(ctx context.Context, sdkOpts []claude.ClientOption, clientOpts ...ClientOption) (Client, error) {
+	// Apply client options
+	opts := &clientOptions{}
+	for _, opt := range clientOpts {
+		opt(opts)
+	}
+
+	c, err := claude.NewClient(sdkOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -54,10 +120,26 @@ func New(ctx context.Context, opts ...claude.ClientOption) (Client, error) {
 		return nil, err
 	}
 
-	return &clientImpl{
+	client := &clientImpl{
 		claude:    c,
 		connected: true,
-	}, nil
+	}
+
+	// Configure resilience if enabled
+	if opts.resilienceConfig != nil {
+		client.resilience = NewResilienceWrapper(opts.resilienceConfig)
+	}
+
+	return client, nil
+}
+
+// CircuitBreakerState returns the current circuit breaker state.
+// Returns StateClosed if no circuit breaker is configured.
+func (c *clientImpl) CircuitBreakerState() gobreaker.State {
+	if c.resilience == nil {
+		return gobreaker.StateClosed
+	}
+	return c.resilience.State()
 }
 
 // Query sends a prompt and returns the complete response.
@@ -65,6 +147,14 @@ func (c *clientImpl) Query(ctx context.Context, prompt string) (string, error) {
 	if !c.connected {
 		return "", ErrNotConnected
 	}
+
+	// Use resilience wrapper if configured
+	if c.resilience != nil {
+		return c.resilience.Execute(ctx, func() (string, error) {
+			return c.claude.Query(ctx, prompt)
+		})
+	}
+
 	return c.claude.Query(ctx, prompt)
 }
 

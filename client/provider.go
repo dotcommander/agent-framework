@@ -75,7 +75,7 @@ func createAnthropicClient(ctx context.Context, cfg ProviderConfig, opts ...clau
 	// Add user-provided options
 	sdkOpts = append(sdkOpts, opts...)
 
-	return New(ctx, sdkOpts...)
+	return New(ctx, sdkOpts)
 }
 
 // createZAIClient creates a client using the Z.AI provider (placeholder).
