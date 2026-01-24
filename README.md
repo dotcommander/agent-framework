@@ -1,10 +1,9 @@
-# Agent CLI Framework
+# Agent Framework
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
-A reusable Go framework for building Claude-powered CLI tools using [github.com/dotcommander/agent-sdk-go](https://github.com/dotcommander/agent-sdk-go).
+Agent framework for building Claude-powered CLI tools using [agent-sdk-go](https://github.com/dotcommander/agent-sdk-go).
 
 ## Features
 
@@ -17,20 +16,35 @@ A reusable Go framework for building Claude-powered CLI tools using [github.com/
 - **CLI scaffolding** - Built on Cobra for consistent CLI patterns
 - **Composable design** - Import packages and wire together custom applications
 
-### New in v1.0
+### Key Features
 
-1. **Agent Loop** - Gather, decide, act, verify pattern with configurable iteration limits, token budgets, and verification thresholds
-2. **Subagent Spawning** - Parallel execution with isolated contexts, concurrent workers via errgroup, and result aggregation
-3. **MCP Integration** - Full Model Context Protocol server/client implementation for tool discovery and invocation
-4. **Rules-Based Validation** - Composable rule sets with built-in validators (Required, Regex, Enum, Range, Length, Custom)
-5. **Visual Verification** - Screenshot capture, baseline comparison, pixel-based diffing, and AI-powered visual analysis
-6. **File System State** - Track files, create snapshots, detect changes, and rollback to previous states
-7. **Hierarchical Evaluation** - Multi-level checks (syntax, semantic, behavioral, visual) with weighted scoring and rubrics
-8. **Semantic Search** - Embedding-based code search with chunking strategies and hybrid keyword/vector search
-9. **Code Generation Output** - Structured diffs, code blocks, and change tracking with markdown/JSON formatting
-10. **Context Compaction** - Token-aware summarization to manage long conversations within context limits
+| Feature | Description |
+|---------|-------------|
+| **Agent Loop** | Gather → decide → act → verify pattern with iteration limits, token budgets, and verification thresholds |
+| **Subagent Spawning** | Parallel execution with isolated contexts via errgroup and result aggregation |
+| **MCP Integration** | Full Model Context Protocol server/client for tool discovery and invocation |
+| **Rules-Based Validation** | Composable validators: Required, Regex, Enum, Range, Length, Custom |
+| **Visual Verification** | Screenshot capture, baseline comparison, pixel diffing, AI-powered analysis |
+| **File System State** | Track files, create snapshots, detect changes, rollback |
+| **Hierarchical Evaluation** | Multi-level checks (syntax, semantic, behavioral, visual) with weighted scoring |
+| **Semantic Search** | Embedding-based code search with chunking and hybrid keyword/vector search |
+| **Code Generation Output** | Structured diffs, code blocks, change tracking with markdown/JSON formatting |
+| **Context Compaction** | Token-aware summarization for managing long conversations |
+| **Graceful Shutdown** | Shutdown hooks with LIFO execution and timeout handling |
+| **Resilience Patterns** | Circuit breaker and retry with exponential backoff |
 
 ## Installation
+
+```bash
+# Clone both repositories as siblings (uses replace directive)
+git clone https://github.com/dotcommander/agent-framework.git
+git clone https://github.com/dotcommander/agent-sdk-go.git
+
+# Build
+cd agent-framework && go build ./...
+```
+
+Or add to your project:
 
 ```bash
 go get github.com/dotcommander/agent
@@ -328,13 +342,26 @@ results, _ := index.Search(ctx, "error handling pattern", 10)
 results, _ := index.HybridSearch(ctx, "parse JSON", 10, 0.3)
 ```
 
-## Example Applications
+## Examples
 
-See `/cmd/agent/main.go` for a complete example demonstrating:
+The `examples/` directory contains runnable examples for each major feature:
 
-- Type-safe tool registration
-- Custom system prompts
-- Graceful error handling
+| Example | Description |
+|---------|-------------|
+| `loop/` | Agent loop pattern (gather → decide → act → verify) |
+| `subagents/` | Parallel subagent execution with result aggregation |
+| `mcp/` | MCP server/client implementation |
+| `validation/` | Rules-based validation with composable rules |
+| `codegen/` | Structured code generation output |
+| `search/` | Semantic search with embeddings |
+| `state/` | File system state tracking and rollback |
+| `evaluation/` | Hierarchical verification with rubrics |
+| `advanced/` | Advanced patterns combining multiple features |
+
+```bash
+# Run an example
+cd examples/loop && go run main.go
+```
 
 ## Building
 
@@ -349,39 +376,16 @@ go build -o agent-example ./cmd/agent
 ln -sf "$(pwd)/agent-example" ~/go/bin/agent-example
 ```
 
-## Module Setup
+## Development Setup
 
-This framework uses a `replace` directive to point to the local agent-sdk-go during development:
+This framework uses a `replace` directive for local development with agent-sdk-go:
 
 ```go
 // go.mod
-module github.com/dotcommander/agent
-
-go 1.22
-
-require (
-    github.com/dotcommander/agent-sdk-go v0.0.0
-    github.com/spf13/cobra v1.10.2
-)
-
 replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
 ```
 
-**For users:** If you're importing this module and agent-sdk-go isn't published to a module proxy, you have two options:
-
-1. **Add your own replace directive** pointing to your local clone of agent-sdk-go
-2. **Wait for a published release** where the replace directive is removed and proper versions are tagged
-
-To use locally:
-
-```bash
-# Clone both repositories as siblings
-git clone https://github.com/dotcommander/agent-sdk-go
-git clone https://github.com/dotcommander/agent
-
-# The replace directive will resolve ../agent-sdk-go automatically
-cd agent && go build ./...
-```
+Clone both repositories as siblings for the replace directive to resolve.
 
 ## Design Principles
 
