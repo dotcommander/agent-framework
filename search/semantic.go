@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"golang.org/x/time/rate"
 )
 
 // Chunking defaults for code index.
@@ -97,9 +99,12 @@ type SemanticIndex struct {
 	mu        sync.RWMutex
 
 	// LRU eviction
-	maxEntries int                    // 0 means unlimited
-	lruList    *list.List             // front = most recent, back = least recent
-	lruMap     map[string]*lruEntry   // docID -> lruEntry
+	maxEntries int                  // 0 means unlimited
+	lruList    *list.List           // front = most recent, back = least recent
+	lruMap     map[string]*lruEntry // docID -> lruEntry
+
+	// Rate limiting for embedding API calls
+	rateLimiter *rate.Limiter // nil means no rate limiting
 }
 
 // IndexConfig configures the semantic index.
@@ -129,6 +134,16 @@ func WithMaxEntries(max int) IndexOption {
 	}
 }
 
+// WithRateLimiter sets rate limiting for embedding API calls.
+// limit is requests per second (e.g., rate.Limit(100.0/60.0) for 100 req/min).
+// burst is the maximum burst size (typically 1-10).
+// Default is nil (no rate limiting).
+func WithRateLimiter(limit rate.Limit, burst int) IndexOption {
+	return func(idx *SemanticIndex) {
+		idx.rateLimiter = rate.NewLimiter(limit, burst)
+	}
+}
+
 // NewSemanticIndex creates a new semantic index.
 func NewSemanticIndex(embedder EmbeddingProvider, chunker Chunker, opts ...IndexOption) *SemanticIndex {
 	idx := &SemanticIndex{
@@ -145,6 +160,15 @@ func NewSemanticIndex(embedder EmbeddingProvider, chunker Chunker, opts ...Index
 	return idx
 }
 
+// waitForRateLimit waits for rate limiter if configured.
+// Returns nil if no rate limiter, or waits respecting context cancellation.
+func (idx *SemanticIndex) waitForRateLimit(ctx context.Context) error {
+	if idx.rateLimiter == nil {
+		return nil
+	}
+	return idx.rateLimiter.Wait(ctx)
+}
+
 // Add adds a document to the index.
 func (idx *SemanticIndex) Add(ctx context.Context, doc *Document) error {
 	if doc.ID == "" {
@@ -153,6 +177,9 @@ func (idx *SemanticIndex) Add(ctx context.Context, doc *Document) error {
 
 	// Generate document embedding
 	if len(doc.Embedding) == 0 && idx.embedder != nil {
+		if err := idx.waitForRateLimit(ctx); err != nil {
+			return fmt.Errorf("rate limit wait: %w", err)
+		}
 		embedding, err := idx.embedder.Embed(ctx, doc.Content)
 		if err != nil {
 			return fmt.Errorf("embed document: %w", err)
@@ -167,6 +194,9 @@ func (idx *SemanticIndex) Add(ctx context.Context, doc *Document) error {
 
 		// Embed chunks
 		if idx.embedder != nil && len(chunks) > 0 {
+			if err := idx.waitForRateLimit(ctx); err != nil {
+				return fmt.Errorf("rate limit wait: %w", err)
+			}
 			texts := make([]string, len(chunks))
 			for i, chunk := range chunks {
 				texts[i] = chunk.Content
@@ -282,6 +312,11 @@ func (idx *SemanticIndex) Search(ctx context.Context, query string, topK int) ([
 		return nil, fmt.Errorf("no embedder configured")
 	}
 
+	// Wait for rate limit before embedding query
+	if err := idx.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limit wait: %w", err)
+	}
+
 	// Embed query
 	queryEmbedding, err := idx.embedder.Embed(ctx, query)
 	if err != nil {
@@ -295,6 +330,11 @@ func (idx *SemanticIndex) Search(ctx context.Context, query string, topK int) ([
 func (idx *SemanticIndex) SearchWithOptions(ctx context.Context, query string, opts *SearchOptions) (*SearchResponse, error) {
 	if idx.embedder == nil {
 		return nil, fmt.Errorf("no embedder configured")
+	}
+
+	// Wait for rate limit before embedding query
+	if err := idx.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limit wait: %w", err)
 	}
 
 	queryEmbedding, err := idx.embedder.Embed(ctx, query)
@@ -523,13 +563,21 @@ type Chunker interface {
 
 // FixedSizeChunker splits by character count.
 type FixedSizeChunker struct {
-	Size    int
-	Overlap int
+	Size      int
+	Overlap   int
+	MaxChunks int // Maximum chunks per document (0 = unlimited)
 }
 
-// NewFixedSizeChunker creates a fixed size chunker.
+// NewFixedSizeChunker creates a fixed size chunker with default max chunks limit.
 // Overlap must be less than Size to ensure forward progress; values are clamped if invalid.
 func NewFixedSizeChunker(size, overlap int) *FixedSizeChunker {
+	return NewFixedSizeChunkerWithLimit(size, overlap, DefaultMaxChunks)
+}
+
+// NewFixedSizeChunkerWithLimit creates a fixed size chunker with configurable max chunks.
+// Overlap must be less than Size to ensure forward progress; values are clamped if invalid.
+// maxChunks of 0 means unlimited.
+func NewFixedSizeChunkerWithLimit(size, overlap, maxChunks int) *FixedSizeChunker {
 	// Ensure size is positive
 	if size <= 0 {
 		size = 1
@@ -539,12 +587,14 @@ func NewFixedSizeChunker(size, overlap int) *FixedSizeChunker {
 		overlap = max(0, size-1)
 	}
 	return &FixedSizeChunker{
-		Size:    size,
-		Overlap: overlap,
+		Size:      size,
+		Overlap:   overlap,
+		MaxChunks: maxChunks,
 	}
 }
 
 // Chunk splits a document into fixed-size chunks.
+// If MaxChunks is set and exceeded, chunks are truncated to preserve the first N.
 func (c *FixedSizeChunker) Chunk(ctx context.Context, doc *Document) []*DocumentChunk {
 	content := doc.Content
 	if len(content) == 0 {
@@ -555,6 +605,11 @@ func (c *FixedSizeChunker) Chunk(ctx context.Context, doc *Document) []*Document
 	chunkNum := 0
 
 	for start := 0; start < len(content); {
+		// Stop early if max chunks limit reached
+		if c.MaxChunks > 0 && chunkNum >= c.MaxChunks {
+			break
+		}
+
 		end := min(start+c.Size, len(content))
 
 		chunkNum++
@@ -579,11 +634,19 @@ func (c *FixedSizeChunker) Chunk(ctx context.Context, doc *Document) []*Document
 type SentenceChunker struct {
 	MaxSentences int
 	Overlap      int
+	MaxChunks    int // Maximum chunks per document (0 = unlimited)
 }
 
-// NewSentenceChunker creates a sentence-based chunker.
+// NewSentenceChunker creates a sentence-based chunker with default max chunks limit.
 // Overlap must be less than MaxSentences to ensure forward progress; values are clamped if invalid.
 func NewSentenceChunker(maxSentences, overlap int) *SentenceChunker {
+	return NewSentenceChunkerWithLimit(maxSentences, overlap, DefaultMaxChunks)
+}
+
+// NewSentenceChunkerWithLimit creates a sentence-based chunker with configurable max chunks.
+// Overlap must be less than MaxSentences to ensure forward progress; values are clamped if invalid.
+// maxChunks of 0 means unlimited.
+func NewSentenceChunkerWithLimit(maxSentences, overlap, maxChunks int) *SentenceChunker {
 	// Ensure maxSentences is positive
 	if maxSentences <= 0 {
 		maxSentences = 1
@@ -595,10 +658,12 @@ func NewSentenceChunker(maxSentences, overlap int) *SentenceChunker {
 	return &SentenceChunker{
 		MaxSentences: maxSentences,
 		Overlap:      overlap,
+		MaxChunks:    maxChunks,
 	}
 }
 
 // Chunk splits a document by sentences.
+// If MaxChunks is set and exceeded, chunks are truncated to preserve the first N.
 func (c *SentenceChunker) Chunk(ctx context.Context, doc *Document) []*DocumentChunk {
 	sentences := splitSentences(doc.Content)
 	if len(sentences) == 0 {
@@ -609,6 +674,11 @@ func (c *SentenceChunker) Chunk(ctx context.Context, doc *Document) []*DocumentC
 	chunkNum := 0
 
 	for i := 0; i < len(sentences); {
+		// Stop early if max chunks limit reached
+		if c.MaxChunks > 0 && chunkNum >= c.MaxChunks {
+			break
+		}
+
 		end := min(i+c.MaxSentences, len(sentences))
 
 		chunkContent := strings.Join(sentences[i:end], " ")

@@ -22,12 +22,24 @@ const (
 	// DefaultWatchDebounce is the default debounce duration for file watch events.
 	// Multiple rapid events are coalesced into a single change notification.
 	DefaultWatchDebounce = 100 * time.Millisecond
+
+	// DefaultStopTimeout is the maximum time to wait for the event loop to exit.
+	DefaultStopTimeout = 5 * time.Second
 )
 
 // Security-related errors.
 var (
 	ErrPathOutsideBase = pathutil.ErrPathOutsideBase
 	ErrPathTraversal   = pathutil.ErrPathTraversal
+)
+
+// FileWatcher errors.
+var (
+	// ErrWatcherAlreadyRunning is returned when StartWithContext is called on a running watcher.
+	ErrWatcherAlreadyRunning = fmt.Errorf("file watcher is already running")
+
+	// ErrStopTimeout is returned when Stop fails to terminate the goroutine within the timeout.
+	ErrStopTimeout = fmt.Errorf("file watcher stop timed out")
 )
 
 // FileState represents the state of a file at a point in time.
@@ -153,19 +165,41 @@ func (s *FileSystemStore) validatePath(path string) (string, error) {
 // CaptureFile captures the current state of a file.
 // This is the public API that handles path validation.
 func (s *FileSystemStore) CaptureFile(path string) (*FileState, error) {
+	return s.CaptureFileWithContext(context.Background(), path)
+}
+
+// CaptureFileWithContext captures the current state of a file with context cancellation.
+// This is the public API that handles path validation and respects context cancellation.
+func (s *FileSystemStore) CaptureFileWithContext(ctx context.Context, path string) (*FileState, error) {
+	// Check context before any operations
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Validate path before any operations
 	validPath, err := s.validatePath(path)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.captureFileInternal(validPath)
+	return s.captureFileInternalWithContext(ctx, validPath)
 }
 
 // captureFileInternal captures file state for an already-validated path.
 // This internal method can be called while holding locks since it doesn't
 // acquire any locks itself. The path must already be validated and cleaned.
 func (s *FileSystemStore) captureFileInternal(validPath string) (*FileState, error) {
+	return s.captureFileInternalWithContext(context.Background(), validPath)
+}
+
+// captureFileInternalWithContext captures file state with context cancellation support.
+// This allows long I/O operations to be interrupted when the context is cancelled.
+func (s *FileSystemStore) captureFileInternalWithContext(ctx context.Context, validPath string) (*FileState, error) {
+	// Check context before starting I/O
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	info, err := os.Stat(validPath)
 	if os.IsNotExist(err) {
 		return &FileState{
@@ -185,9 +219,18 @@ func (s *FileSystemStore) captureFileInternal(validPath string) (*FileState, err
 		Exists:  true,
 	}
 
-	// Calculate hash
-	hash, err := hashFile(validPath)
+	// Check context before expensive hash operation
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Calculate hash with context support
+	hash, err := hashFileWithContext(ctx, validPath)
 	if err != nil {
+		// If cancelled, return the context error directly
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, pathutil.SanitizeError("hash", err)
 	}
 	state.Hash = hash
@@ -511,6 +554,17 @@ func (s *FileSystemStore) Clear() {
 
 // hashFile calculates SHA256 hash of a file.
 func hashFile(path string) (string, error) {
+	return hashFileWithContext(context.Background(), path)
+}
+
+// hashFileWithContext calculates SHA256 hash of a file with context cancellation.
+// For large files, the context is checked periodically during reading.
+func hashFileWithContext(ctx context.Context, path string) (string, error) {
+	// Check context before starting I/O
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -518,8 +572,25 @@ func hashFile(path string) (string, error) {
 	defer f.Close()
 
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
+
+	// Use a buffer to read in chunks, checking context periodically
+	buf := make([]byte, 32*1024) // 32KB chunks
+	for {
+		// Check context before each read
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
+		n, err := f.Read(buf)
+		if n > 0 {
+			h.Write(buf[:n])
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil
@@ -623,11 +694,37 @@ func (w *FileWatcher) Start() error {
 
 // StartWithContext begins watching for changes with context cancellation support.
 // The watcher will stop when the context is cancelled.
+// Returns ErrWatcherAlreadyRunning if the watcher is already running.
 func (w *FileWatcher) StartWithContext(ctx context.Context) error {
 	w.mu.Lock()
 	if w.running {
 		w.mu.Unlock()
-		return nil
+		return ErrWatcherAlreadyRunning
+	}
+
+	// Capture the done channel from any previous run to wait for it
+	prevDone := w.done
+
+	w.mu.Unlock()
+
+	// Wait for previous goroutine to fully exit before starting a new one.
+	// This prevents goroutine leaks on rapid Stop/Start cycles.
+	if prevDone != nil {
+		select {
+		case <-prevDone:
+			// Previous goroutine has exited
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(DefaultStopTimeout):
+			return fmt.Errorf("%w: previous goroutine did not exit", ErrStopTimeout)
+		}
+	}
+
+	w.mu.Lock()
+	// Re-check running state after waiting (another caller may have started)
+	if w.running {
+		w.mu.Unlock()
+		return ErrWatcherAlreadyRunning
 	}
 
 	// Create fsnotify watcher - don't store it yet until setup succeeds
@@ -747,13 +844,19 @@ func (w *FileWatcher) eventLoop(ctx context.Context) {
 
 		var changes []*FileChange
 		for path, event := range pending {
-			change := w.processEvent(path, event)
+			// Check context before each file operation to allow early exit
+			if ctx.Err() != nil {
+				// Context cancelled - stop processing remaining events
+				break
+			}
+			change := w.processEvent(ctx, path, event)
 			if change != nil {
 				changes = append(changes, change)
 			}
 		}
 
-		if len(changes) > 0 {
+		// Only call onChange if we have changes and context isn't cancelled
+		if len(changes) > 0 && ctx.Err() == nil {
 			onChange, _ := getCallbacks()
 			if onChange != nil {
 				onChange(changes)
@@ -842,9 +945,15 @@ func (w *FileWatcher) matchesPatterns(path string) bool {
 }
 
 // processEvent converts an fsnotify event to a FileChange.
-func (w *FileWatcher) processEvent(path string, event fsnotify.Event) *FileChange {
+// The context is used to cancel file I/O operations during shutdown.
+func (w *FileWatcher) processEvent(ctx context.Context, path string, event fsnotify.Event) *FileChange {
 	var changeType string
 	var before, after *FileState
+
+	// Check context before starting any I/O
+	if ctx.Err() != nil {
+		return nil
+	}
 
 	// Get before state from store
 	w.store.mu.RLock()
@@ -858,14 +967,18 @@ func (w *FileWatcher) processEvent(path string, event fsnotify.Event) *FileChang
 	switch {
 	case event.Has(fsnotify.Create):
 		changeType = "create"
-		after, _ = w.store.CaptureFile(path)
+		after, _ = w.store.CaptureFileWithContext(ctx, path)
 		if after == nil {
+			// If context was cancelled, return early
+			if ctx.Err() != nil {
+				return nil
+			}
 			after = &FileState{Path: path, Exists: false}
 		}
 
 	case event.Has(fsnotify.Write):
 		changeType = "modify"
-		after, _ = w.store.CaptureFile(path)
+		after, _ = w.store.CaptureFileWithContext(ctx, path)
 		if after == nil {
 			return nil
 		}
@@ -884,6 +997,11 @@ func (w *FileWatcher) processEvent(path string, event fsnotify.Event) *FileChang
 		after = &FileState{Path: path, Exists: false}
 
 	default:
+		return nil
+	}
+
+	// Check context again after I/O operations
+	if ctx.Err() != nil {
 		return nil
 	}
 
@@ -909,14 +1027,19 @@ func (w *FileWatcher) processEvent(path string, event fsnotify.Event) *FileChang
 }
 
 // Stop stops watching and cleans up resources.
-func (w *FileWatcher) Stop() {
+// Blocks until the event loop goroutine exits or the timeout expires.
+// Returns ErrStopTimeout if the goroutine doesn't exit within DefaultStopTimeout.
+func (w *FileWatcher) Stop() error {
 	w.mu.Lock()
 	if !w.running {
 		w.mu.Unlock()
-		return
+		return nil
 	}
 	w.running = false
 	cancel := w.cancel
+	done := w.done
+	stop := w.stop
+	watcher := w.watcher
 	w.mu.Unlock()
 
 	// Cancel context to signal shutdown
@@ -924,12 +1047,25 @@ func (w *FileWatcher) Stop() {
 		cancel()
 	}
 
-	// Signal stop and wait for eventLoop to finish
-	close(w.stop)
-	<-w.done
+	// Signal stop
+	close(stop)
+
+	// Wait for eventLoop to finish with timeout
+	select {
+	case <-done:
+		// Goroutine exited cleanly
+	case <-time.After(DefaultStopTimeout):
+		// Close the watcher anyway to unblock any pending reads
+		if watcher != nil {
+			_ = watcher.Close()
+		}
+		return ErrStopTimeout
+	}
 
 	// Close the watcher
-	if w.watcher != nil {
-		_ = w.watcher.Close()
+	if watcher != nil {
+		_ = watcher.Close()
 	}
+
+	return nil
 }
