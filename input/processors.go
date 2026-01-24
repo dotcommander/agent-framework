@@ -96,17 +96,30 @@ type Processor interface {
 type URLProcessor struct {
 	client       *http.Client
 	maxBytes     int64
+	timeout      time.Duration
 	allowPrivate bool // Set to true only for testing
 }
 
 // URLProcessorOption configures URLProcessor.
 type URLProcessorOption func(*URLProcessor)
 
-// WithMaxURLBytes sets the maximum response body size.
-func WithMaxURLBytes(maxBytes int64) URLProcessorOption {
+// WithTimeout sets the HTTP client timeout (default 30s).
+func WithTimeout(timeout time.Duration) URLProcessorOption {
+	return func(p *URLProcessor) {
+		p.timeout = timeout
+	}
+}
+
+// WithMaxContentSize sets the maximum response body size (default 10MB).
+func WithMaxContentSize(maxBytes int64) URLProcessorOption {
 	return func(p *URLProcessor) {
 		p.maxBytes = maxBytes
 	}
+}
+
+// WithMaxURLBytes sets the maximum response body size (deprecated: use WithMaxContentSize).
+func WithMaxURLBytes(maxBytes int64) URLProcessorOption {
+	return WithMaxContentSize(maxBytes)
 }
 
 // WithAllowPrivateIPs allows fetching from private IP addresses (use only for testing).
@@ -119,23 +132,27 @@ func WithAllowPrivateIPs(allow bool) URLProcessorOption {
 // NewURLProcessor creates a new URL processor with SSRF protection.
 func NewURLProcessor(opts ...URLProcessorOption) *URLProcessor {
 	p := &URLProcessor{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				DialContext: (&net.Dialer{
-					Timeout:   10 * time.Second,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 10 * time.Second,
-			},
-		},
 		maxBytes:     DefaultMaxURLBytes,
+		timeout:      30 * time.Second,
 		allowPrivate: false,
 	}
 
+	// Apply options first to get timeout
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	// Create client with configured timeout
+	p.client = &http.Client{
+		Timeout: p.timeout,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
+		},
 	}
 
 	return p
@@ -213,9 +230,8 @@ func (p *URLProcessor) validateURL(rawURL string) error {
 	if !p.allowPrivate {
 		ips, err := net.LookupIP(host)
 		if err != nil {
-			// If we can't resolve, allow the request (DNS might be unavailable)
-			// but log the issue
-			return nil
+			// Fail-closed: block request if DNS resolution fails (prevents SSRF bypass)
+			return fmt.Errorf("%w: DNS resolution failed for %s", ErrBlockedURL, host)
 		}
 
 		for _, ip := range ips {
@@ -459,11 +475,16 @@ type GlobProcessor struct {
 // GlobProcessorOption configures GlobProcessor.
 type GlobProcessorOption func(*GlobProcessor)
 
-// WithGlobMaxFileCount sets the maximum number of files to process.
-func WithGlobMaxFileCount(count int) GlobProcessorOption {
+// WithMaxMatches sets the maximum number of files to process (default 100).
+func WithMaxMatches(count int) GlobProcessorOption {
 	return func(p *GlobProcessor) {
 		p.maxFileCount = count
 	}
+}
+
+// WithGlobMaxFileCount sets the maximum number of files to process (deprecated: use WithMaxMatches).
+func WithGlobMaxFileCount(count int) GlobProcessorOption {
+	return WithMaxMatches(count)
 }
 
 // WithGlobMaxTotalBytes sets the maximum total bytes to read across all files.
