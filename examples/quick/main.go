@@ -31,6 +31,9 @@ func main() {
 
 	// Example 5: Hooks and permissions
 	showHooksAndPermissions()
+
+	// Example 6: Response helpers
+	showResponseHelpers()
 }
 
 // showOneLiner demonstrates the simplest possible agent.
@@ -207,6 +210,50 @@ func showHooksAndPermissions() {
           return agent.Allow()
       }).
       Run()
+`)
+	fmt.Println()
+}
+
+// showResponseHelpers demonstrates the Response struct.
+func showResponseHelpers() {
+	fmt.Println("--- Example 6: Response Helpers ---")
+	fmt.Println()
+
+	_, _ = os.Stdout.WriteString(`  // Get rich response with metadata:
+  resp, err := agent.QueryResponse(ctx, "What is 2+2?")
+  if err != nil {
+      log.Fatal(err)
+  }
+
+  // String content
+  fmt.Println(resp.Content)
+  fmt.Println(resp.String()) // Same as Content
+
+  // Parse JSON response
+  var data MyStruct
+  if err := resp.JSON(&data); err != nil {
+      log.Fatal(err)
+  }
+
+  // Save to file
+  resp.SaveTo("output.txt")
+
+  // Check content
+  if resp.Contains("error") {
+      // handle error
+  }
+
+  // Line-by-line processing
+  for _, line := range resp.Lines() {
+      fmt.Println(line)
+  }
+
+  // Check for tool calls
+  if resp.HasToolCalls() {
+      for _, tc := range resp.ToolCalls {
+          fmt.Printf("Tool: %s\n", tc.Name)
+      }
+  }
 `)
 	fmt.Println()
 }

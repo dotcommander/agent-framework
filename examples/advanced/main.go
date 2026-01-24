@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	agent "github.com/dotcommander/agent-framework"
 	"github.com/dotcommander/agent-framework/app"
+	"github.com/dotcommander/agent-framework/tools"
 )
 
 // CalculateInput is the input schema for the calculate tool.
@@ -37,7 +37,7 @@ type GetTimeOutput struct {
 
 func main() {
 	// Create a calculator tool with type safety
-	calcTool := agent.TypedTool[CalculateInput, CalculateOutput](
+	calcTool := tools.TypedTool[CalculateInput, CalculateOutput](
 		"calculate",
 		"Performs basic arithmetic operations",
 		map[string]any{
@@ -63,7 +63,7 @@ func main() {
 	)
 
 	// Create a time tool
-	timeTool := agent.TypedTool[GetTimeInput, GetTimeOutput](
+	timeTool := tools.TypedTool[GetTimeInput, GetTimeOutput](
 		"get_time",
 		"Gets the current time in a specific timezone",
 		map[string]any{
@@ -81,11 +81,11 @@ func main() {
 
 	// Create app with custom run function
 	application := app.New("advanced-agent", "1.0.0",
-		agent.WithSystemPrompt("You are a helpful assistant with access to calculation and time tools."),
-		agent.WithModel("claude-sonnet-4-20250514"),
-		agent.WithTool(calcTool),
-		agent.WithTool(timeTool),
-		agent.WithRunFunc(customRunner),
+		app.WithSystemPrompt("You are a helpful assistant with access to calculation and time tools."),
+		app.WithModel("claude-sonnet-4-20250514"),
+		app.WithTool(calcTool),
+		app.WithTool(timeTool),
+		app.WithRunFunc(customRunner),
 	)
 
 	if err := application.Run(); err != nil {
