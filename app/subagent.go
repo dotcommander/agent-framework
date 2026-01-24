@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -35,6 +36,12 @@ var ErrMaxSubagentsReached = errors.New("maximum subagents reached")
 // ErrTokenBudgetExhausted is returned when the global token budget cannot accommodate a request.
 var ErrTokenBudgetExhausted = errors.New("global token budget exhausted")
 
+// ErrReservationTimeout indicates token reservation timed out.
+var ErrReservationTimeout = errors.New("token reservation timed out")
+
+// ErrBudgetClosed indicates the token budget was closed.
+var ErrBudgetClosed = errors.New("token budget closed")
+
 // Subagent represents an isolated child agent with its own context.
 type Subagent struct {
 	ID          string
@@ -62,13 +69,17 @@ type SubagentResult struct {
 	Tokens  int
 }
 
+// DefaultReservationTimeout is the maximum time to wait for token reservation.
+const DefaultReservationTimeout = 5 * time.Minute
+
 // TokenBudget manages a global token pool with thread-safe reservation and release.
 // It prevents OOM by limiting total concurrent token usage across all subagents.
 type TokenBudget struct {
 	total    int64      // Maximum tokens available
 	reserved int64      // Currently reserved tokens
-	mu       sync.Mutex // Protects reserved and waiters
+	mu       sync.Mutex // Protects reserved, waiters, and closed
 	waiters  []chan struct{}
+	closed   bool // Set true when Close() is called
 }
 
 // NewTokenBudget creates a budget pool with the specified total tokens.
@@ -77,11 +88,14 @@ func NewTokenBudget(total int64) *TokenBudget {
 }
 
 // Reserve attempts to reserve tokens from the pool.
-// Returns true if reservation succeeded, false if insufficient budget.
+// Returns true if reservation succeeded, false if insufficient budget or closed.
 func (tb *TokenBudget) Reserve(tokens int64) bool {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
+	if tb.closed {
+		return false
+	}
 	if tb.reserved+tokens > tb.total {
 		return false
 	}
@@ -90,10 +104,20 @@ func (tb *TokenBudget) Reserve(tokens int64) bool {
 }
 
 // ReserveWait blocks until tokens are available, then reserves them.
-// Returns an error if the context is cancelled while waiting.
+// Returns an error if:
+// - The context is cancelled while waiting
+// - The reservation times out (DefaultReservationTimeout)
+// - The budget is closed
 func (tb *TokenBudget) ReserveWait(ctx context.Context, tokens int64) error {
+	timeout := time.NewTimer(DefaultReservationTimeout)
+	defer timeout.Stop()
+
 	for {
 		tb.mu.Lock()
+		if tb.closed {
+			tb.mu.Unlock()
+			return ErrBudgetClosed
+		}
 		if tb.reserved+tokens <= tb.total {
 			tb.reserved += tokens
 			tb.mu.Unlock()
@@ -105,13 +129,16 @@ func (tb *TokenBudget) ReserveWait(ctx context.Context, tokens int64) error {
 		tb.waiters = append(tb.waiters, waiter)
 		tb.mu.Unlock()
 
-		// Wait for signal or context cancellation
+		// Wait for signal, context cancellation, or timeout
 		select {
 		case <-ctx.Done():
 			tb.removeWaiter(waiter)
 			return ctx.Err()
+		case <-timeout.C:
+			tb.removeWaiter(waiter)
+			return ErrReservationTimeout
 		case <-waiter:
-			// Token released, loop to retry reservation
+			// Token released or budget closed, loop to check
 		}
 	}
 }
@@ -165,6 +192,29 @@ func (tb *TokenBudget) Reserved() int64 {
 // Total returns the total budget capacity.
 func (tb *TokenBudget) Total() int64 {
 	return tb.total // Immutable, no lock needed
+}
+
+// Close releases all waiting goroutines and prevents new reservations.
+// Should be called during graceful shutdown. Safe to call multiple times.
+func (tb *TokenBudget) Close() error {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+
+	if tb.closed {
+		return nil // Already closed
+	}
+	tb.closed = true
+
+	// Wake all waiters by signaling their channels
+	for _, waiter := range tb.waiters {
+		select {
+		case waiter <- struct{}{}:
+		default:
+		}
+	}
+	tb.waiters = nil
+
+	return nil
 }
 
 // SubagentConfig configures subagent behavior.
@@ -571,6 +621,20 @@ func (m *SubagentManager) Shutdown() {
 		cancel()
 		delete(m.cancelFuncs, id)
 	}
+}
+
+// Close releases resources and wakes any blocked goroutines waiting on token budget.
+// This should be called during graceful shutdown after Shutdown().
+// Safe to call multiple times.
+func (m *SubagentManager) Close() error {
+	// First shutdown any running agents
+	m.Shutdown()
+
+	// Then close the token budget to wake any blocked waiters
+	if m.config != nil && m.config.GlobalTokenBudget != nil {
+		return m.config.GlobalTokenBudget.Close()
+	}
+	return nil
 }
 
 // Running returns the number of currently executing subagents.

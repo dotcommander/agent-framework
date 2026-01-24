@@ -13,6 +13,173 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestParentContextCancellationStopsSubagents verifies that cancelling the parent
+// context propagates to all subagents and stops their execution.
+func TestParentContextCancellationStopsSubagents(t *testing.T) {
+	t.Parallel()
+
+	var started, cancelled atomic.Int32
+	executor := SubagentExecutorFunc(func(ctx context.Context, agent *Subagent) (*SubagentResult, error) {
+		started.Add(1)
+		select {
+		case <-ctx.Done():
+			cancelled.Add(1)
+			return &SubagentResult{Success: false, Error: ctx.Err()}, ctx.Err()
+		case <-time.After(5 * time.Second):
+			return &SubagentResult{Success: true}, nil
+		}
+	})
+
+	config := &SubagentConfig{
+		MaxConcurrent:   10,
+		IsolateContext:  true,
+		PropagateCancel: true,
+	}
+	manager := NewSubagentManager(config, executor)
+
+	const numAgents = 5
+	agents := make([]*Subagent, numAgents)
+	for i := range numAgents {
+		agents[i] = mustSpawn(t, manager, fmt.Sprintf("agent-%d", i), fmt.Sprintf("task-%d", i))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start agents and cancel after they've started
+	done := make(chan struct{})
+	go func() {
+		_, _ = manager.RunAgents(ctx, agents...)
+		close(done)
+	}()
+
+	// Wait for agents to start
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	// Wait for RunAgents to return
+	select {
+	case <-done:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunAgents did not return after context cancellation")
+	}
+
+	// Verify cancellation propagated
+	assert.Greater(t, started.Load(), int32(0), "some agents should have started")
+	assert.Greater(t, cancelled.Load(), int32(0), "some agents should have been cancelled")
+}
+
+// TestTokenBudgetClose verifies that Close() wakes blocked ReserveWait calls.
+func TestTokenBudgetClose(t *testing.T) {
+	t.Parallel()
+
+	// Create a budget that's already exhausted
+	budget := NewTokenBudget(100)
+	budget.Reserve(100) // Exhaust the budget
+
+	// Start goroutines that will block on ReserveWait
+	var wg sync.WaitGroup
+	var closedErrors atomic.Int32
+	const numWaiters = 5
+
+	for range numWaiters {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := budget.ReserveWait(context.Background(), 50)
+			if errors.Is(err, ErrBudgetClosed) {
+				closedErrors.Add(1)
+			}
+		}()
+	}
+
+	// Give goroutines time to block
+	time.Sleep(50 * time.Millisecond)
+
+	// Close should wake all waiters
+	err := budget.Close()
+	require.NoError(t, err)
+
+	// Wait for all goroutines with timeout
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success - all waiters woke up
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() did not wake all blocked waiters")
+	}
+
+	assert.Equal(t, int32(numWaiters), closedErrors.Load(), "all waiters should receive ErrBudgetClosed")
+}
+
+// TestTokenBudgetCloseIdempotent verifies Close() is safe to call multiple times.
+func TestTokenBudgetCloseIdempotent(t *testing.T) {
+	t.Parallel()
+
+	budget := NewTokenBudget(100)
+
+	// Close multiple times should not panic
+	require.NoError(t, budget.Close())
+	require.NoError(t, budget.Close())
+	require.NoError(t, budget.Close())
+
+	// Reserve should fail on closed budget
+	assert.False(t, budget.Reserve(10))
+}
+
+// TestSubagentManagerClose verifies Close() releases all resources.
+func TestSubagentManagerClose(t *testing.T) {
+	t.Parallel()
+
+	executor := newMockExecutor(100 * time.Millisecond)
+	config := &SubagentConfig{
+		MaxConcurrent:     5,
+		IsolateContext:    true,
+		GlobalTokenBudget: NewTokenBudget(1000),
+		WaitForTokens:     true,
+	}
+	manager := NewSubagentManager(config, executor)
+
+	// Spawn and run some agents
+	agents := make([]*Subagent, 3)
+	for i := range 3 {
+		agents[i] = mustSpawn(t, manager, fmt.Sprintf("agent-%d", i), fmt.Sprintf("task-%d", i))
+	}
+
+	// Start running in background
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_, _ = manager.RunAgents(ctx, agents...)
+		close(done)
+	}()
+
+	// Give agents time to start
+	time.Sleep(20 * time.Millisecond)
+
+	// Close should cancel running agents and close budget
+	err := manager.Close()
+	require.NoError(t, err)
+
+	// Cancel context to ensure RunAgents returns
+	cancel()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunAgents did not return after Close()")
+	}
+
+	// Verify no running agents
+	assert.Equal(t, 0, manager.Running())
+}
+
 // mockExecutor tracks execution for testing.
 type mockExecutor struct {
 	executionCount atomic.Int64
