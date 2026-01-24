@@ -14,10 +14,10 @@ const (
 	// ProviderAnthropic uses the Anthropic Claude API via agent-sdk-go.
 	ProviderAnthropic Provider = "anthropic"
 
-	// ProviderZAI uses the Z.AI API (placeholder).
+	// ProviderZAI uses synthetic responses for Z.AI API compatibility testing.
 	ProviderZAI Provider = "zai"
 
-	// ProviderSynthetic uses synthetic responses for testing (placeholder).
+	// ProviderSynthetic uses synthetic responses for testing.
 	ProviderSynthetic Provider = "synthetic"
 )
 
@@ -82,11 +82,9 @@ func createAnthropicClient(ctx context.Context, cfg ProviderConfig, opts ...clau
 	return c, nil
 }
 
-// createZAIClient creates a client using the Z.AI provider.
-// Z.AI integration is planned but not yet implemented.
-// See: https://github.com/dotcommander/agent-framework/issues for tracking.
+// createZAIClient creates a Z.AI mock client for testing.
 func createZAIClient(ctx context.Context, cfg ProviderConfig, opts ...claude.ClientOption) (Client, error) {
-	return nil, fmt.Errorf("%w: zai provider not yet implemented - use ProviderAnthropic or ProviderSynthetic", ErrInvalidProvider)
+	return NewZAIClient(), nil
 }
 
 // createSyntheticClient creates a synthetic client for testing.
