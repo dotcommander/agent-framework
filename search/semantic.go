@@ -11,6 +11,18 @@ import (
 	"sync"
 )
 
+// Chunking defaults for code index.
+const (
+	// DefaultChunkSize is the default character count for fixed-size chunking.
+	DefaultChunkSize = 512
+
+	// DefaultChunkOverlap is the default overlap between adjacent chunks.
+	DefaultChunkOverlap = 64
+
+	// DefaultMaxChunks is the maximum number of chunks per document.
+	DefaultMaxChunks = 100
+)
+
 // Embedding represents a vector embedding.
 type Embedding []float64
 
@@ -100,9 +112,9 @@ type IndexConfig struct {
 // DefaultIndexConfig returns sensible defaults.
 func DefaultIndexConfig() *IndexConfig {
 	return &IndexConfig{
-		ChunkSize:    512,
-		ChunkOverlap: 64,
-		MaxChunks:    100,
+		ChunkSize:    DefaultChunkSize,
+		ChunkOverlap: DefaultChunkOverlap,
+		MaxChunks:    DefaultMaxChunks,
 	}
 }
 
@@ -216,7 +228,12 @@ func (idx *SemanticIndex) evictIfNeeded() {
 			break
 		}
 
-		docID := elem.Value.(string)
+		docID, ok := elem.Value.(string)
+		if !ok {
+			// Corrupted LRU entry - remove and continue
+			idx.lruList.Remove(elem)
+			continue
+		}
 		idx.lruList.Remove(elem)
 		delete(idx.lruMap, docID)
 
@@ -511,7 +528,16 @@ type FixedSizeChunker struct {
 }
 
 // NewFixedSizeChunker creates a fixed size chunker.
+// Overlap must be less than Size to ensure forward progress; values are clamped if invalid.
 func NewFixedSizeChunker(size, overlap int) *FixedSizeChunker {
+	// Ensure size is positive
+	if size <= 0 {
+		size = 1
+	}
+	// Validate: overlap must be less than size to ensure forward progress
+	if overlap >= size {
+		overlap = max(0, size-1)
+	}
 	return &FixedSizeChunker{
 		Size:    size,
 		Overlap: overlap,
@@ -556,13 +582,15 @@ type SentenceChunker struct {
 }
 
 // NewSentenceChunker creates a sentence-based chunker.
+// Overlap must be less than MaxSentences to ensure forward progress; values are clamped if invalid.
 func NewSentenceChunker(maxSentences, overlap int) *SentenceChunker {
+	// Ensure maxSentences is positive
+	if maxSentences <= 0 {
+		maxSentences = 1
+	}
 	// Validate: overlap must be less than maxSentences to ensure forward progress
 	if overlap >= maxSentences {
-		overlap = maxSentences - 1
-		if overlap < 0 {
-			overlap = 0
-		}
+		overlap = max(0, maxSentences-1)
 	}
 	return &SentenceChunker{
 		MaxSentences: maxSentences,
@@ -693,7 +721,7 @@ type CodeIndex struct {
 // NewCodeIndex creates a new code index.
 func NewCodeIndex(embedder EmbeddingProvider, opts ...IndexOption) *CodeIndex {
 	return &CodeIndex{
-		SemanticIndex: NewSemanticIndex(embedder, NewFixedSizeChunker(512, 64), opts...),
+		SemanticIndex: NewSemanticIndex(embedder, NewFixedSizeChunker(DefaultChunkSize, DefaultChunkOverlap), opts...),
 		codeDocuments: make(map[string]*CodeDocument),
 	}
 }
