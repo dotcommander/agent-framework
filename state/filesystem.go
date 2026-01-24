@@ -77,6 +77,8 @@ type FileSystemStore struct {
 	basePath       string
 	basePathAbs    string // Resolved absolute path of basePath
 	enforceBase    bool   // If true, all operations must be within basePath
+	maxSnapshots   int    // Maximum snapshots to keep (0 = unlimited)
+	maxChanges     int    // Maximum changes to track (0 = unlimited)
 	snapshots      []*Snapshot
 	current        map[string]*FileState
 	changes        []*FileChange
@@ -90,6 +92,20 @@ type FileSystemStoreOption func(*FileSystemStore)
 func WithEnforceBasePath(enforce bool) FileSystemStoreOption {
 	return func(s *FileSystemStore) {
 		s.enforceBase = enforce
+	}
+}
+
+// WithMaxSnapshots limits the number of snapshots kept (oldest evicted first).
+func WithMaxSnapshots(max int) FileSystemStoreOption {
+	return func(s *FileSystemStore) {
+		s.maxSnapshots = max
+	}
+}
+
+// WithMaxChanges limits the number of changes tracked (oldest evicted first).
+func WithMaxChanges(max int) FileSystemStoreOption {
+	return func(s *FileSystemStore) {
+		s.maxChanges = max
 	}
 }
 
@@ -281,26 +297,44 @@ func (s *FileSystemStore) TrackDir(dir string, patterns ...string) error {
 
 // DetectChanges checks for changes since tracking started.
 func (s *FileSystemStore) DetectChanges() ([]*FileChange, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Collect paths and before states under read lock (fast)
+	s.mu.RLock()
+	paths := make([]string, 0, len(s.current))
+	beforeStates := make(map[string]*FileState, len(s.current))
+	for path, state := range s.current {
+		paths = append(paths, path)
+		beforeStates[path] = state
+	}
+	s.mu.RUnlock()
 
+	// Perform I/O without holding lock (slow, but doesn't block other operations)
 	var changes []*FileChange
-
-	for path, before := range s.current {
-		// Use captureFileInternal since paths in s.current are already validated
-		// when they were added via Track(). This avoids redundant validation
-		// and prevents any potential locking issues.
+	afterStates := make(map[string]*FileState, len(paths))
+	for _, path := range paths {
 		after, err := s.captureFileInternal(path)
 		if err != nil {
 			continue
 		}
+		afterStates[path] = after
 
-		change := detectChange(before, after)
+		change := detectChange(beforeStates[path], after)
 		if change != nil {
 			changes = append(changes, change)
-			s.changes = append(s.changes, change)
-			s.current[path] = after
 		}
+	}
+
+	// Update state atomically under write lock
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, change := range changes {
+		s.changes = append(s.changes, change)
+		s.current[change.Path] = afterStates[change.Path]
+	}
+
+	// Evict oldest changes if limit exceeded
+	if s.maxChanges > 0 && len(s.changes) > s.maxChanges {
+		s.changes = s.changes[len(s.changes)-s.maxChanges:]
 	}
 
 	return changes, nil
@@ -335,6 +369,11 @@ func (s *FileSystemStore) RecordChange(path string, changeType string) error {
 	s.changes = append(s.changes, change)
 	s.current[path] = after
 
+	// Evict oldest changes if limit exceeded
+	if s.maxChanges > 0 && len(s.changes) > s.maxChanges {
+		s.changes = s.changes[len(s.changes)-s.maxChanges:]
+	}
+
 	return nil
 }
 
@@ -364,6 +403,12 @@ func (s *FileSystemStore) CreateSnapshot(message string) *Snapshot {
 	}
 
 	s.snapshots = append(s.snapshots, snapshot)
+
+	// Evict oldest snapshots if limit exceeded
+	if s.maxSnapshots > 0 && len(s.snapshots) > s.maxSnapshots {
+		s.snapshots = s.snapshots[len(s.snapshots)-s.maxSnapshots:]
+	}
+
 	return snapshot
 }
 
@@ -560,6 +605,7 @@ type FileWatcher struct {
 	config   *WatchConfig
 	store    *FileSystemStore
 	onChange func([]*FileChange)
+	onError  func(error)
 	watcher  *fsnotify.Watcher
 	stop     chan struct{}
 	done     chan struct{}
@@ -583,6 +629,13 @@ func NewFileWatcher(config *WatchConfig, store *FileSystemStore) *FileWatcher {
 // OnChange sets the callback for file changes.
 func (w *FileWatcher) OnChange(fn func([]*FileChange)) *FileWatcher {
 	w.onChange = fn
+	return w
+}
+
+// OnError sets the callback for watcher errors.
+// If not set, errors are logged to stderr.
+func (w *FileWatcher) OnError(fn func(error)) *FileWatcher {
+	w.onError = fn
 	return w
 }
 
@@ -612,21 +665,21 @@ func (w *FileWatcher) Start() error {
 		}
 		if info.IsDir() && w.config.Recursive {
 			if err := w.store.TrackDir(path, w.config.Patterns...); err != nil {
-				w.watcher.Close()
+				_ = w.watcher.Close()
 				return err
 			}
 			// Add directory and subdirectories to watcher
 			if err := w.addRecursive(path); err != nil {
-				w.watcher.Close()
+				_ = w.watcher.Close()
 				return err
 			}
 		} else {
 			if err := w.store.Track(path); err != nil {
-				w.watcher.Close()
+				_ = w.watcher.Close()
 				return err
 			}
 			if err := w.watcher.Add(path); err != nil {
-				w.watcher.Close()
+				_ = w.watcher.Close()
 				return fmt.Errorf("watch %s: %w", path, err)
 			}
 		}
@@ -727,8 +780,12 @@ func (w *FileWatcher) eventLoop() {
 			if !ok {
 				return
 			}
-			// Log errors but continue watching
-			_ = err // Errors are ignored in the simplified implementation
+			// Call error callback or log to stderr
+			if w.onError != nil {
+				w.onError(err)
+			} else {
+				fmt.Fprintf(os.Stderr, "file watcher error: %v\n", err)
+			}
 		}
 	}
 }
@@ -826,6 +883,6 @@ func (w *FileWatcher) Stop() {
 
 	// Close the watcher
 	if w.watcher != nil {
-		w.watcher.Close()
+		_ = w.watcher.Close()
 	}
 }

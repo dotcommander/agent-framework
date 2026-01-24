@@ -2,11 +2,19 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
 )
+
+// ErrAllAgentsFailed is returned when all subagents fail execution.
+var ErrAllAgentsFailed = errors.New("all subagents failed")
+
+// ErrMaxSubagentsReached is returned when spawning would exceed the limit.
+var ErrMaxSubagentsReached = errors.New("maximum subagents reached")
 
 // Subagent represents an isolated child agent with its own context.
 type Subagent struct {
@@ -40,6 +48,9 @@ type SubagentConfig struct {
 	// MaxConcurrent limits parallel subagent execution.
 	MaxConcurrent int
 
+	// MaxSubagents limits total subagents that can be spawned (0 = unlimited).
+	MaxSubagents int
+
 	// IsolateContext creates fresh context per subagent.
 	IsolateContext bool
 
@@ -54,6 +65,7 @@ type SubagentConfig struct {
 func DefaultSubagentConfig() *SubagentConfig {
 	return &SubagentConfig{
 		MaxConcurrent:   5,
+		MaxSubagents:    100,
 		IsolateContext:  true,
 		ShareTools:      true,
 		PropagateCancel: true,
@@ -94,9 +106,15 @@ func NewSubagentManager(config *SubagentConfig, executor SubagentExecutor) *Suba
 }
 
 // Spawn creates a new subagent with isolated context.
-func (m *SubagentManager) Spawn(name, task string, opts ...SubagentOption) *Subagent {
+// Returns nil and ErrMaxSubagentsReached if the limit is exceeded.
+func (m *SubagentManager) Spawn(name, task string, opts ...SubagentOption) (*Subagent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Check limit before spawning
+	if m.config.MaxSubagents > 0 && len(m.subagents) >= m.config.MaxSubagents {
+		return nil, ErrMaxSubagentsReached
+	}
 
 	m.nextID++
 	id := fmt.Sprintf("subagent-%d", m.nextID)
@@ -119,7 +137,7 @@ func (m *SubagentManager) Spawn(name, task string, opts ...SubagentOption) *Suba
 	}
 
 	m.subagents[id] = agent
-	return agent
+	return agent, nil
 }
 
 // SubagentOption configures a subagent.
@@ -142,9 +160,7 @@ func WithSubagentTools(tools []ToolInfo) SubagentOption {
 // WithSubagentState sets initial state.
 func WithSubagentState(state map[string]any) SubagentOption {
 	return func(a *Subagent) {
-		for k, v := range state {
-			a.Context.State[k] = v
-		}
+		maps.Copy(a.Context.State, state)
 	}
 }
 
@@ -196,6 +212,10 @@ func (m *SubagentManager) RunAgents(ctx context.Context, agents ...*Subagent) (m
 		return nil, fmt.Errorf("no executor configured")
 	}
 
+	if len(agents) == 0 {
+		return make(map[string]*SubagentResult), nil
+	}
+
 	results := make(map[string]*SubagentResult)
 	var mu sync.Mutex
 
@@ -214,7 +234,6 @@ func (m *SubagentManager) RunAgents(ctx context.Context, agents ...*Subagent) (m
 
 			mu.Lock()
 			results[agent.ID] = result
-			agent.Result = result
 			mu.Unlock()
 
 			// Don't return error - collect all results
@@ -224,6 +243,26 @@ func (m *SubagentManager) RunAgents(ctx context.Context, agents ...*Subagent) (m
 
 	if err := g.Wait(); err != nil {
 		return results, err
+	}
+
+	// Update agent results after all goroutines complete (avoids race)
+	m.mu.Lock()
+	for _, agent := range agents {
+		if r, ok := results[agent.ID]; ok {
+			agent.Result = r
+		}
+	}
+	m.mu.Unlock()
+
+	// Check if all agents failed
+	successCount := 0
+	for _, r := range results {
+		if r.Success {
+			successCount++
+		}
+	}
+	if successCount == 0 {
+		return results, ErrAllAgentsFailed
 	}
 
 	return results, nil
