@@ -2,29 +2,9 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 
 	"github.com/dotcommander/agent-framework/tools"
 )
-
-// ToolDef represents a tool definition.
-type ToolDef struct {
-	Name        string
-	Description string
-	Schema      map[string]any
-	Handler     func(ctx context.Context, input map[string]any) (any, error)
-}
-
-// toAppTool converts ToolDef to a tools.Tool for the app package.
-func (t ToolDef) toAppTool() *tools.Tool {
-	return &tools.Tool{
-		Name:        t.Name,
-		Description: t.Description,
-		InputSchema: t.Schema,
-		Handler:     t.Handler,
-	}
-}
 
 // Tool creates a type-safe tool with schema inferred from the input type.
 // The input type's JSON schema is automatically generated from struct tags.
@@ -46,34 +26,8 @@ func (t ToolDef) toAppTool() *tools.Tool {
 //	        return SearchOutput{Results: results}, nil
 //	    },
 //	)
-func Tool[I, O any](name, description string, fn func(context.Context, I) (O, error)) ToolDef {
-	schema := SchemaFor[I]()
-
-	return ToolDef{
-		Name:        name,
-		Description: description,
-		Schema:      schema,
-		Handler: func(ctx context.Context, input map[string]any) (any, error) {
-			// Marshal input to JSON then unmarshal to typed struct
-			data, err := json.Marshal(input)
-			if err != nil {
-				return nil, fmt.Errorf("marshal input: %w", err)
-			}
-
-			var typedInput I
-			if err := json.Unmarshal(data, &typedInput); err != nil {
-				return nil, fmt.Errorf("unmarshal to %T: %w", typedInput, err)
-			}
-
-			// Call the handler
-			result, err := fn(ctx, typedInput)
-			if err != nil {
-				return nil, err
-			}
-
-			return result, nil
-		},
-	}
+func Tool[I, O any](name, description string, fn func(context.Context, I) (O, error)) *tools.Tool {
+	return tools.Define(name, description, fn)
 }
 
 // SimpleTool creates a tool with a single string input and output.
@@ -90,34 +44,8 @@ func Tool[I, O any](name, description string, fn func(context.Context, I) (O, er
 //	        return string(runes), nil
 //	    },
 //	)
-func SimpleTool(name, description string, fn func(string) (string, error)) ToolDef {
-	return ToolDef{
-		Name:        name,
-		Description: description,
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"input": map[string]any{
-					"type":        "string",
-					"description": "Input value",
-				},
-			},
-			"required": []string{"input"},
-		},
-		Handler: func(ctx context.Context, input map[string]any) (any, error) {
-			s, ok := input["input"].(string)
-			if !ok {
-				return nil, fmt.Errorf("input must be a string")
-			}
-
-			result, err := fn(s)
-			if err != nil {
-				return nil, err
-			}
-
-			return map[string]any{"output": result}, nil
-		},
-	}
+func SimpleTool(name, description string, fn func(string) (string, error)) *tools.Tool {
+	return tools.DefineSimple(name, description, fn)
 }
 
 // AsyncTool creates a tool that runs asynchronously and returns immediately.
@@ -130,34 +58,8 @@ func SimpleTool(name, description string, fn func(string) (string, error)) ToolD
 //	        return downloadFile(url)
 //	    },
 //	)
-func AsyncTool(name, description string, fn func(context.Context, string) error) ToolDef {
-	return ToolDef{
-		Name:        name,
-		Description: description,
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"input": map[string]any{
-					"type":        "string",
-					"description": "Input value",
-				},
-			},
-			"required": []string{"input"},
-		},
-		Handler: func(ctx context.Context, input map[string]any) (any, error) {
-			s, ok := input["input"].(string)
-			if !ok {
-				return nil, fmt.Errorf("input must be a string")
-			}
-
-			// Run in goroutine
-			go func() {
-				_ = fn(ctx, s)
-			}()
-
-			return map[string]any{"status": "started"}, nil
-		},
-	}
+func AsyncTool(name, description string, fn func(context.Context, string) error) *tools.Tool {
+	return tools.DefineAsync(name, description, fn)
 }
 
 // ToolWithSchema creates a tool with an explicit schema.
@@ -181,11 +83,6 @@ func AsyncTool(name, description string, fn func(context.Context, string) error)
 //	        return evaluate(expr), nil
 //	    },
 //	)
-func ToolWithSchema(name, description string, schema map[string]any, fn func(context.Context, map[string]any) (any, error)) ToolDef {
-	return ToolDef{
-		Name:        name,
-		Description: description,
-		Schema:      schema,
-		Handler:     fn,
-	}
+func ToolWithSchema(name, description string, schema map[string]any, fn tools.Handler) *tools.Tool {
+	return tools.DefineWithSchema(name, description, schema, fn)
 }

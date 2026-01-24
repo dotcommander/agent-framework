@@ -70,14 +70,6 @@ func WithResilience() ClientOption {
 // Message represents a message from the AI.
 type Message = claude.Message
 
-// Tool represents a tool available to the AI.
-type Tool struct {
-	Name        string
-	Description string
-	InputSchema map[string]any
-	Handler     func(ctx context.Context, input map[string]any) (any, error)
-}
-
 // Querier is the minimal interface for querying an LLM.
 type Querier interface {
 	// Query sends a prompt and returns the complete response.

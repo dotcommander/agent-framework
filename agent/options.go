@@ -1,5 +1,9 @@
 package agent
 
+import (
+	"github.com/dotcommander/agent-framework/tools"
+)
+
 // Option is a functional option for configuring builders.
 type Option func(*Builder)
 
@@ -32,7 +36,7 @@ func WithBudget(usd float64) Option {
 }
 
 // WithTool adds a tool.
-func WithTool(t ToolDef) Option {
+func WithTool(t *tools.Tool) Option {
 	return func(b *Builder) {
 		b.Tool(t)
 	}
