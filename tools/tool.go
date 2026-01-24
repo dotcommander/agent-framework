@@ -4,6 +4,8 @@ package tools
 import (
 	"context"
 	"fmt"
+
+	"github.com/dotcommander/agent-framework/internal/conv"
 )
 
 // InputValidationError represents a validation failure for tool input.
@@ -51,9 +53,16 @@ func (t *Tool) ValidateInput(input map[string]any) error {
 		return nil
 	}
 
-	// Extract properties from schema
-	properties, _ := t.InputSchema["properties"].(map[string]any)
-	required, _ := t.InputSchema["required"].([]any)
+	// Extract properties from schema (both are optional - missing means empty)
+	var properties map[string]any
+	if p, ok := t.InputSchema["properties"].(map[string]any); ok {
+		properties = p
+	}
+
+	var required []any
+	if r, ok := t.InputSchema["required"].([]any); ok {
+		required = r
+	}
 
 	// Build set of required fields
 	requiredSet := make(map[string]bool)
@@ -159,7 +168,7 @@ func validateFieldValue(fieldName string, value any, schema any) error {
 
 	// Validate numeric constraints
 	if expectedType == "number" || expectedType == "integer" {
-		n := toFloat(value)
+		n, _ := conv.ToFloat64(value)
 
 		if min, ok := propDef["minimum"].(float64); ok {
 			if n < min {
@@ -240,23 +249,6 @@ func isValidType(value any, expectedType string) bool {
 		return ok
 	}
 	return true // Unknown type, allow
-}
-
-// toFloat converts numeric values to float64 for comparison.
-func toFloat(value any) float64 {
-	switch v := value.(type) {
-	case float64:
-		return v
-	case float32:
-		return float64(v)
-	case int:
-		return float64(v)
-	case int64:
-		return float64(v)
-	case int32:
-		return float64(v)
-	}
-	return 0
 }
 
 // Invoke invokes the tool with the given input after validation.
