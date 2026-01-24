@@ -27,6 +27,9 @@ subagents
 /quick
 *.log
 
+# Generated files
+*-output.md
+
 # IDE
 .idea/
 .vscode/
