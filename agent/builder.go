@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dotcommander/agent-framework/tools"
 	"github.com/dotcommander/agent-sdk-go/claude"
 )
 
@@ -17,7 +18,10 @@ type Builder struct {
 	sdkOpts []claude.ClientOption
 
 	// Tools to register
-	tools []ToolDef
+	tools []*tools.Tool
+
+	// Session state shared across tool invocations
+	state any
 
 	// Internal flags
 	queryMode bool
@@ -86,8 +90,21 @@ func (b *Builder) AppendSystem(prompt string) *Builder {
 }
 
 // Tool adds a tool to the agent.
-func (b *Builder) Tool(t ToolDef) *Builder {
+func (b *Builder) Tool(t *tools.Tool) *Builder {
 	b.tools = append(b.tools, t)
+	return b
+}
+
+// State sets session state that tools can access via agent.State[T](ctx).
+// The state pointer is shared across all tool invocations.
+//
+// Example:
+//
+//	type Session struct { Files []string }
+//	session := &Session{}
+//	agent.New("finder").State(session).Tool(findTool).Run()
+func (b *Builder) State(state any) *Builder {
+	b.state = state
 	return b
 }
 
