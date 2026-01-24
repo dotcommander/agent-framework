@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/dotcommander/agent-framework/app"
 	"github.com/dotcommander/agent-sdk-go/claude"
@@ -81,14 +82,54 @@ func QueryResponse(ctx context.Context, prompt string, opts ...Option) (*Respons
 // QueryAs sends a prompt and returns a typed response.
 // The response is parsed as JSON into the type T.
 //
-// Example:
+// When validation rules are provided via WithValidation(), QueryAs automatically
+// retries up to WithMaxRetries() times (default 3), feeding validation errors
+// back to the LLM for self-correction.
+//
+// Example (basic):
 //
 //	type Summary struct {
 //	    Title  string   `json:"title"`
 //	    Points []string `json:"points"`
 //	}
 //	summary, err := agent.QueryAs[Summary](ctx, "Summarize this article...")
-func QueryAs[T any](ctx context.Context, prompt string, opts ...Option) (*T, error) {
+//
+// Example (with validation):
+//
+//	type User struct {
+//	    Age int `json:"age"`
+//	}
+//	user, err := agent.QueryAs[User](ctx, prompt,
+//	    agent.WithValidation(validation.Range("age", 18, 150)),
+//	    agent.WithMaxRetries(3),
+//	)
+func QueryAs[T any](ctx context.Context, prompt string, opts ...any) (*T, error) {
+	// Separate query options from builder options
+	var qopts queryOptions
+	qopts.maxRetries = 3 // default
+
+	var builderOpts []Option
+
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case QueryOption:
+			v(&qopts)
+		case Option:
+			builderOpts = append(builderOpts, v)
+		}
+	}
+
+	// If no validation rules, use simple path (no retries needed)
+	if len(qopts.rules) == 0 {
+		return queryAsSimple[T](ctx, prompt, builderOpts)
+	}
+
+	// Self-healing path with validation and retries
+	return queryAsWithValidation[T](ctx, prompt, builderOpts, &qopts)
+}
+
+// queryAsSimple is the original QueryAs logic without validation.
+func queryAsSimple[T any](ctx context.Context, prompt string, opts []Option) (*T, error) {
 	b := New("agent").Apply(opts...)
 
 	// Add JSON schema for type T
@@ -106,6 +147,49 @@ func QueryAs[T any](ctx context.Context, prompt string, opts ...Option) (*T, err
 	}
 
 	return &result, nil
+}
+
+// queryAsWithValidation implements self-healing QueryAs with validation retries.
+func queryAsWithValidation[T any](ctx context.Context, prompt string, opts []Option, qopts *queryOptions) (*T, error) {
+	var lastResponse string
+	var lastErrors []string
+
+	for attempt := 0; attempt <= qopts.maxRetries; attempt++ {
+		currentPrompt := prompt
+		if attempt > 0 && len(lastErrors) > 0 {
+			currentPrompt = buildRetryPrompt(prompt, lastResponse, lastErrors)
+		}
+
+		b := New("agent").Apply(opts...)
+
+		schema := SchemaFor[T]()
+		b.sdkOpts = append(b.sdkOpts, claude.WithJSONSchema(schema))
+
+		response, err := b.Query(ctx, currentPrompt)
+		if err != nil {
+			return nil, fmt.Errorf("query failed: %w", err)
+		}
+
+		lastResponse = response
+
+		// Parse JSON
+		var result T
+		if err := json.Unmarshal([]byte(response), &result); err != nil {
+			lastErrors = []string{fmt.Sprintf("JSON parse error: %v", err)}
+			continue
+		}
+
+		// Run validation
+		errors := validateStruct(&result, qopts.rules)
+		if len(errors) > 0 {
+			lastErrors = errors
+			continue
+		}
+
+		return &result, nil
+	}
+
+	return nil, fmt.Errorf("validation failed after %d attempts: %s", qopts.maxRetries+1, strings.Join(lastErrors, "; "))
 }
 
 // Stream sends a prompt and streams the response chunks.
@@ -142,9 +226,10 @@ func (b *Builder) buildApp() *app.App {
 		opts = append(opts, app.WithSDKOption(sdkOpt))
 	}
 
-	// Apply tools
+	// Apply tools (wrap with state if configured)
 	for _, tool := range b.tools {
-		opts = append(opts, app.WithTool(tool.toAppTool()))
+		wrappedTool := wrapToolWithState(tool, b.state)
+		opts = append(opts, app.WithTool(wrappedTool))
 	}
 
 	// Set run function for query mode
