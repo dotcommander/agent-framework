@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dotcommander/agent-framework/internal/pathutil"
 	"github.com/fsnotify/fsnotify"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -160,7 +161,7 @@ func TestContainsTraversalEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := containsTraversal(tt.path)
+			result := pathutil.ContainsTraversal(tt.path)
 			assert.Equal(t, tt.expected, result, "Path: %s", tt.path)
 		})
 	}
@@ -693,7 +694,7 @@ func TestSanitizePathError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := sanitizePathError(tt.operation, tt.err)
+			result := pathutil.SanitizeError(tt.operation, tt.err)
 			if tt.err == nil {
 				assert.Nil(t, result)
 			} else {
