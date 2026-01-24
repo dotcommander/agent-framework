@@ -13,6 +13,15 @@ go build -o agent-example ./cmd/agent
 
 # Run after build
 ./agent-example "your prompt here"
+
+# Run tests (when they exist)
+go test ./...
+
+# Run single package test
+go test ./app/...
+
+# Lint (requires golangci-lint)
+golangci-lint run
 ```
 
 ## Dependencies
@@ -23,6 +32,18 @@ replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
 ```
 
 Clone both repos as siblings for the build to work.
+
+## Examples
+
+The `examples/` directory contains runnable examples for each major feature:
+- `examples/loop/` - Agent loop pattern
+- `examples/subagents/` - Parallel subagent execution
+- `examples/mcp/` - MCP server/client
+- `examples/validation/` - Rules-based validation
+- `examples/codegen/` - Code generation output
+- `examples/search/` - Semantic search
+- `examples/state/` - File system tracking
+- `examples/evaluation/` - Hierarchical verification
 
 ## Architecture
 
