@@ -1,24 +1,27 @@
+// Package tools provides the MCP server implementation.
+//
+// MCPServer implements the Model Context Protocol (version 2024-11-05) server,
+// handling tool registration, resource management, and request processing.
+// Compatible with Claude Desktop, MCP Inspector, and conforming clients.
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"runtime/debug"
 	"sync"
+	"time"
 )
 
-// ErrToolConflict is returned when multiple servers provide tools with the same name.
-var ErrToolConflict = errors.New("tool name conflict")
-
-// MCP-related limits for security.
+// MCP protocol version and defaults.
 const (
-	// DefaultMaxJSONSize is the maximum size for JSON payloads (1MB).
-	DefaultMaxJSONSize = 1 * 1024 * 1024
+	// DefaultMCPProtocolVersion is the MCP protocol version implemented by this server.
+	DefaultMCPProtocolVersion = "2024-11-05"
+
+	// DefaultToolTimeout is the default timeout for tool invocations when no deadline is set.
+	DefaultToolTimeout = 30 * time.Second
 )
 
 // MCPServer represents an MCP (Model Context Protocol) server.
@@ -26,7 +29,8 @@ type MCPServer struct {
 	name            string
 	version         string
 	description     string
-	protocolVersion string // MCP protocol version
+	protocolVersion string        // MCP protocol version
+	toolTimeout     time.Duration // Default timeout for tool invocations
 	tools           map[string]*Tool
 	resources       map[string]*Resource
 	maxJSONSize     int64 // Maximum size for JSON payloads
@@ -73,12 +77,21 @@ func WithProtocolVersion(version string) MCPServerOption {
 	}
 }
 
+// WithToolTimeout sets the default timeout for tool invocations.
+// This timeout is applied when the incoming context has no deadline.
+func WithToolTimeout(timeout time.Duration) MCPServerOption {
+	return func(s *MCPServer) {
+		s.toolTimeout = timeout
+	}
+}
+
 // NewMCPServer creates a new MCP server.
 func NewMCPServer(name string, opts ...MCPServerOption) *MCPServer {
 	s := &MCPServer{
 		name:            name,
 		version:         "1.0.0",
-		protocolVersion: "2024-11-05", // Default MCP protocol version
+		protocolVersion: DefaultMCPProtocolVersion,
+		toolTimeout:     DefaultToolTimeout,
 		tools:           make(map[string]*Tool),
 		resources:       make(map[string]*Resource),
 		maxJSONSize:     DefaultMaxJSONSize,
@@ -89,33 +102,6 @@ func NewMCPServer(name string, opts ...MCPServerOption) *MCPServer {
 	}
 
 	return s
-}
-
-// DecodeJSONSafe decodes JSON with size limits to prevent memory exhaustion.
-func DecodeJSONSafe(data []byte, v any, maxSize int64) error {
-	if int64(len(data)) > maxSize {
-		return fmt.Errorf("JSON payload exceeds maximum size of %d bytes", maxSize)
-	}
-
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields() // Optional: stricter parsing
-
-	return decoder.Decode(v)
-}
-
-// DecodeJSONFromReaderSafe decodes JSON from a reader with size limits.
-func DecodeJSONFromReaderSafe(r io.Reader, v any, maxSize int64) error {
-	limitedReader := io.LimitReader(r, maxSize+1)
-	data, err := io.ReadAll(limitedReader)
-	if err != nil {
-		return fmt.Errorf("read JSON: %w", err)
-	}
-
-	if int64(len(data)) > maxSize {
-		return fmt.Errorf("JSON payload exceeds maximum size of %d bytes", maxSize)
-	}
-
-	return json.Unmarshal(data, v)
 }
 
 // RegisterTool adds a tool to the server.
@@ -300,13 +286,8 @@ func (s *MCPServer) handleToolsList(req *MCPRequest) *MCPResponse {
 }
 
 func (s *MCPServer) handleToolsCall(ctx context.Context, req *MCPRequest) *MCPResponse {
-	var params struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-	}
-
-	// Use safe JSON decoding with size limits
-	if err := DecodeJSONSafe(req.Params, &params, s.maxJSONSize); err != nil {
+	name, args, err := s.parseToolCallParams(req)
+	if err != nil {
 		return &MCPResponse{
 			Error: &Error{
 				Code:    -32602,
@@ -316,38 +297,39 @@ func (s *MCPServer) handleToolsCall(ctx context.Context, req *MCPRequest) *MCPRe
 		}
 	}
 
-	tool := s.GetTool(params.Name)
-	if tool == nil {
+	tool, err := s.resolveToolByName(name)
+	if err != nil {
 		return &MCPResponse{
 			Error: &Error{
 				Code:    -32602,
-				Message: fmt.Sprintf("tool not found: %s", params.Name),
+				Message: err.Error(),
 			},
 			ID: req.ID,
 		}
 	}
 
-	// Unmarshal arguments to map with size limits
-	var args map[string]any
-	if len(params.Arguments) > 0 {
-		if err := DecodeJSONSafe(params.Arguments, &args, s.maxJSONSize); err != nil {
-			return &MCPResponse{
-				Error: &Error{
-					Code:    -32602,
-					Message: fmt.Sprintf("invalid arguments: %v", err),
-				},
-				ID: req.ID,
-			}
-		}
+	// Apply default timeout if context has no deadline
+	toolCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline && s.toolTimeout > 0 {
+		var cancel context.CancelFunc
+		toolCtx, cancel = context.WithTimeout(ctx, s.toolTimeout)
+		defer cancel()
 	}
 
-	// Invoke tool with panic recovery
-	result, err := s.safeInvoke(ctx, tool, args)
+	result, err := s.invokeToolSafely(toolCtx, tool, args)
 	if err != nil {
+		// Check if error is due to context cancellation/timeout
+		code := -32000
+		message := fmt.Sprintf("tool execution failed: %v", err)
+		if toolCtx.Err() == context.DeadlineExceeded {
+			message = fmt.Sprintf("tool execution timed out after %v", s.toolTimeout)
+		} else if toolCtx.Err() == context.Canceled {
+			message = "tool execution cancelled"
+		}
 		return &MCPResponse{
 			Error: &Error{
-				Code:    -32000,
-				Message: fmt.Sprintf("tool execution failed: %v", err),
+				Code:    code,
+				Message: message,
 			},
 			ID: req.ID,
 		}
@@ -366,11 +348,39 @@ func (s *MCPServer) handleToolsCall(ctx context.Context, req *MCPRequest) *MCPRe
 	}
 }
 
-// safeInvoke invokes a tool with panic recovery.
-func (s *MCPServer) safeInvoke(ctx context.Context, tool *Tool, args map[string]any) (result any, err error) {
+// parseToolCallParams extracts and validates tool call parameters from the request.
+func (s *MCPServer) parseToolCallParams(req *MCPRequest) (name string, args map[string]any, err error) {
+	var params struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+
+	if err := DecodeJSONSafe(req.Params, &params, s.maxJSONSize); err != nil {
+		return "", nil, err
+	}
+
+	if len(params.Arguments) > 0 {
+		if err := DecodeJSONSafe(params.Arguments, &args, s.maxJSONSize); err != nil {
+			return "", nil, fmt.Errorf("invalid arguments: %v", err)
+		}
+	}
+
+	return params.Name, args, nil
+}
+
+// resolveToolByName finds a tool by name or returns an error.
+func (s *MCPServer) resolveToolByName(name string) (*Tool, error) {
+	tool := s.GetTool(name)
+	if tool == nil {
+		return nil, fmt.Errorf("tool not found: %s", name)
+	}
+	return tool, nil
+}
+
+// invokeToolSafely calls the tool with panic recovery and error handling.
+func (s *MCPServer) invokeToolSafely(ctx context.Context, tool *Tool, args map[string]any) (result any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			// Log stack trace for debugging before converting to error
 			log.Printf("Tool %s panicked: %v\n%s", tool.Name, r, debug.Stack())
 			err = fmt.Errorf("tool panicked: %v", r)
 			result = nil
@@ -438,220 +448,4 @@ func (s *MCPServer) handleResourcesRead(req *MCPRequest) *MCPResponse {
 		},
 		ID: req.ID,
 	}
-}
-
-// MCPClient connects to external MCP servers.
-type MCPClient struct {
-	serverURL string
-	transport MCPTransport
-}
-
-// MCPTransport handles MCP communication.
-type MCPTransport interface {
-	Send(ctx context.Context, req *MCPRequest) (*MCPResponse, error)
-	Close() error
-}
-
-// NewMCPClient creates a new MCP client.
-func NewMCPClient(serverURL string, transport MCPTransport) *MCPClient {
-	return &MCPClient{
-		serverURL: serverURL,
-		transport: transport,
-	}
-}
-
-// ListTools fetches available tools from the server.
-func (c *MCPClient) ListTools(ctx context.Context) ([]*Tool, error) {
-	resp, err := c.transport.Send(ctx, &MCPRequest{
-		Method: "tools/list",
-		ID:     1,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.Error != nil {
-		return nil, fmt.Errorf("MCP error: %s", resp.Error.Message)
-	}
-
-	result, ok := resp.Result.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("unexpected response format")
-	}
-
-	toolsRaw, ok := result["tools"].([]any)
-	if !ok {
-		return nil, fmt.Errorf("unexpected tools format")
-	}
-
-	tools := make([]*Tool, 0, len(toolsRaw))
-	for _, t := range toolsRaw {
-		tm, ok := t.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		name, _ := tm["name"].(string)
-		desc, _ := tm["description"].(string)
-		schema, _ := tm["inputSchema"].(map[string]any)
-
-		tools = append(tools, &Tool{
-			Name:        name,
-			Description: desc,
-			InputSchema: schema,
-		})
-	}
-
-	return tools, nil
-}
-
-// CallTool invokes a tool on the remote server.
-func (c *MCPClient) CallTool(ctx context.Context, name string, args any) (any, error) {
-	argsJSON, err := json.Marshal(args)
-	if err != nil {
-		return nil, fmt.Errorf("marshal args: %w", err)
-	}
-
-	paramsJSON, err := json.Marshal(map[string]any{
-		"name":      name,
-		"arguments": json.RawMessage(argsJSON),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal params: %w", err)
-	}
-
-	resp, err := c.transport.Send(ctx, &MCPRequest{
-		Method: "tools/call",
-		Params: paramsJSON,
-		ID:     1,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.Error != nil {
-		return nil, fmt.Errorf("MCP error: %s", resp.Error.Message)
-	}
-
-	return resp.Result, nil
-}
-
-// Close closes the client connection.
-func (c *MCPClient) Close() error {
-	if c.transport != nil {
-		return c.transport.Close()
-	}
-	return nil
-}
-
-// ConflictStrategy defines how to handle tool name conflicts.
-type ConflictStrategy int
-
-const (
-	// ConflictError returns an error on conflict (default).
-	ConflictError ConflictStrategy = iota
-	// ConflictFirstWins keeps the first tool, ignores later ones.
-	ConflictFirstWins
-	// ConflictLastWins overwrites with the latest tool (legacy behavior).
-	ConflictLastWins
-)
-
-// ToolDiscovery discovers tools from multiple MCP servers.
-type ToolDiscovery struct {
-	clients          []*MCPClient
-	tools            map[string]*Tool
-	toolSources      map[string]string // tool name -> server URL
-	conflictStrategy ConflictStrategy
-	mu               sync.RWMutex
-}
-
-// DiscoveryOption configures ToolDiscovery.
-type DiscoveryOption func(*ToolDiscovery)
-
-// WithConflictStrategy sets the strategy for handling tool name conflicts.
-func WithConflictStrategy(strategy ConflictStrategy) DiscoveryOption {
-	return func(d *ToolDiscovery) {
-		d.conflictStrategy = strategy
-	}
-}
-
-// NewToolDiscovery creates a new tool discovery service.
-func NewToolDiscovery(opts ...DiscoveryOption) *ToolDiscovery {
-	d := &ToolDiscovery{
-		clients:          make([]*MCPClient, 0),
-		tools:            make(map[string]*Tool),
-		toolSources:      make(map[string]string),
-		conflictStrategy: ConflictError, // Default: error on conflict
-	}
-	for _, opt := range opts {
-		opt(d)
-	}
-	return d
-}
-
-// AddServer adds an MCP server to discover tools from.
-func (d *ToolDiscovery) AddServer(client *MCPClient) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.clients = append(d.clients, client)
-}
-
-// Discover fetches tools from all registered servers.
-func (d *ToolDiscovery) Discover(ctx context.Context) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	for _, client := range d.clients {
-		tools, err := client.ListTools(ctx)
-		if err != nil {
-			continue // Skip failed servers
-		}
-
-		for _, tool := range tools {
-			if existingSource, exists := d.toolSources[tool.Name]; exists {
-				switch d.conflictStrategy {
-				case ConflictError:
-					return fmt.Errorf("%w: tool %q provided by both %q and %q",
-						ErrToolConflict, tool.Name, existingSource, client.serverURL)
-				case ConflictFirstWins:
-					continue // Keep existing tool
-				case ConflictLastWins:
-					// Fall through to overwrite
-				}
-			}
-			d.tools[tool.Name] = tool
-			d.toolSources[tool.Name] = client.serverURL
-		}
-	}
-
-	return nil
-}
-
-// GetTools returns all discovered tools.
-func (d *ToolDiscovery) GetTools() []*Tool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	tools := make([]*Tool, 0, len(d.tools))
-	for _, tool := range d.tools {
-		tools = append(tools, tool)
-	}
-	return tools
-}
-
-// GetToolSource returns the server URL that provided the named tool.
-func (d *ToolDiscovery) GetToolSource(name string) string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.toolSources[name]
-}
-
-// Close closes all client connections.
-func (d *ToolDiscovery) Close() error {
-	for _, client := range d.clients {
-		if err := client.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
 }
