@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/dotcommander/agent-framework/agent"
 )
@@ -178,7 +179,8 @@ func showHooksAndPermissions() {
 	fmt.Println("--- Example 5: Hooks and Permissions ---")
 	fmt.Println()
 
-	fmt.Println(`  // Lifecycle hooks:
+	// Use os.Stdout to avoid go vet warning about Printf directives in example code
+	_, _ = os.Stdout.WriteString(`  // Lifecycle hooks:
   agent.New("secure").
       OnPreToolUse(func(tool string, input map[string]any) bool {
           log.Printf("Tool called: %s", tool)
@@ -204,7 +206,8 @@ func showHooksAndPermissions() {
           }
           return agent.Allow()
       }).
-      Run()`)
+      Run()
+`)
 	fmt.Println()
 }
 
