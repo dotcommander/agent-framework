@@ -150,7 +150,7 @@ func (idx *SemanticIndex) Add(ctx context.Context, doc *Document) error {
 
 	// Chunk document
 	if idx.chunker != nil && len(doc.Chunks) == 0 {
-		chunks := idx.chunker.Chunk(doc)
+		chunks := idx.chunker.Chunk(ctx, doc)
 		doc.Chunks = chunks
 
 		// Embed chunks
@@ -501,7 +501,7 @@ func (idx *SemanticIndex) Clear() {
 
 // Chunker splits documents into chunks.
 type Chunker interface {
-	Chunk(doc *Document) []*DocumentChunk
+	Chunk(ctx context.Context, doc *Document) []*DocumentChunk
 }
 
 // FixedSizeChunker splits by character count.
@@ -519,7 +519,7 @@ func NewFixedSizeChunker(size, overlap int) *FixedSizeChunker {
 }
 
 // Chunk splits a document into fixed-size chunks.
-func (c *FixedSizeChunker) Chunk(doc *Document) []*DocumentChunk {
+func (c *FixedSizeChunker) Chunk(ctx context.Context, doc *Document) []*DocumentChunk {
 	content := doc.Content
 	if len(content) == 0 {
 		return nil
@@ -557,6 +557,13 @@ type SentenceChunker struct {
 
 // NewSentenceChunker creates a sentence-based chunker.
 func NewSentenceChunker(maxSentences, overlap int) *SentenceChunker {
+	// Validate: overlap must be less than maxSentences to ensure forward progress
+	if overlap >= maxSentences {
+		overlap = maxSentences - 1
+		if overlap < 0 {
+			overlap = 0
+		}
+	}
 	return &SentenceChunker{
 		MaxSentences: maxSentences,
 		Overlap:      overlap,
@@ -564,7 +571,7 @@ func NewSentenceChunker(maxSentences, overlap int) *SentenceChunker {
 }
 
 // Chunk splits a document by sentences.
-func (c *SentenceChunker) Chunk(doc *Document) []*DocumentChunk {
+func (c *SentenceChunker) Chunk(ctx context.Context, doc *Document) []*DocumentChunk {
 	sentences := splitSentences(doc.Content)
 	if len(sentences) == 0 {
 		return nil
