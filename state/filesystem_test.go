@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dotcommander/agent-framework/internal/pathutil"
+	"github.com/dotcommander/agent/internal/pathutil"
 	"github.com/fsnotify/fsnotify"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -730,7 +730,7 @@ func TestFileWatcherBasic(t *testing.T) {
 	})
 
 	require.NoError(t, watcher.Start())
-	defer watcher.Stop()
+	defer func() { _ = watcher.Stop() }()
 
 	// Modify file
 	time.Sleep(100 * time.Millisecond) // Let watcher initialize
@@ -768,7 +768,7 @@ func TestFileWatcherCreate(t *testing.T) {
 	})
 
 	require.NoError(t, watcher.Start())
-	defer watcher.Stop()
+	defer func() { _ = watcher.Stop() }()
 
 	// Create new file
 	time.Sleep(100 * time.Millisecond)
@@ -809,7 +809,7 @@ func TestFileWatcherDelete(t *testing.T) {
 	})
 
 	require.NoError(t, watcher.Start())
-	defer watcher.Stop()
+	defer func() { _ = watcher.Stop() }()
 
 	// Delete file
 	time.Sleep(100 * time.Millisecond)
@@ -848,7 +848,7 @@ func TestFileWatcherPatterns(t *testing.T) {
 	})
 
 	require.NoError(t, watcher.Start())
-	defer watcher.Stop()
+	defer func() { _ = watcher.Stop() }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -901,7 +901,7 @@ func TestFileWatcherRecursive(t *testing.T) {
 	})
 
 	require.NoError(t, watcher.Start())
-	defer watcher.Stop()
+	defer func() { _ = watcher.Stop() }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -936,9 +936,9 @@ func TestFileWatcherStopIdempotent(t *testing.T) {
 	require.NoError(t, watcher.Start())
 
 	// Stop multiple times should not panic
-	watcher.Stop()
-	watcher.Stop()
-	watcher.Stop()
+	_ = watcher.Stop()
+	_ = watcher.Stop()
+	_ = watcher.Stop()
 }
 
 // TestMatchesPatterns tests pattern matching logic.

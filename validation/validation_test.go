@@ -3,7 +3,7 @@ package validation
 import (
 	"testing"
 
-	"github.com/dotcommander/agent-framework/internal/conv"
+	"github.com/dotcommander/agent/internal/conv"
 	"github.com/stretchr/testify/assert"
 )
 
