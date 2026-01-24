@@ -53,7 +53,7 @@ func main() {
 	manager := app.NewSubagentManager(config, executor)
 
 	// Spawn multiple subagents with different tasks and isolated contexts
-	researcher := manager.Spawn("researcher", "Research Go concurrency patterns",
+	researcher, err := manager.Spawn("researcher", "Research Go concurrency patterns",
 		app.WithSubagentPrompt("You are a code research assistant"),
 		app.WithSubagentState(map[string]any{
 			"priority": "high",
@@ -64,8 +64,12 @@ func main() {
 			{Name: "analyze", Description: "Analyze code patterns"},
 		}),
 	)
+	if err != nil {
+		fmt.Printf("Error spawning researcher: %v\n", err)
+		return
+	}
 
-	analyzer := manager.Spawn("analyzer", "Analyze existing codebase structure",
+	analyzer, err := manager.Spawn("analyzer", "Analyze existing codebase structure",
 		app.WithSubagentPrompt("You are a code analysis assistant"),
 		app.WithSubagentState(map[string]any{
 			"priority": "medium",
@@ -73,8 +77,12 @@ func main() {
 		}),
 		app.WithSubagentMaxTokens(50000),
 	)
+	if err != nil {
+		fmt.Printf("Error spawning analyzer: %v\n", err)
+		return
+	}
 
-	implementer := manager.Spawn("implementer", "Implement the worker pool",
+	implementer, err := manager.Spawn("implementer", "Implement the worker pool",
 		app.WithSubagentPrompt("You are a code implementation assistant"),
 		app.WithSubagentState(map[string]any{
 			"priority": "high",
@@ -84,16 +92,24 @@ func main() {
 			{Role: "user", Content: "Create a worker pool implementation"},
 		}),
 	)
+	if err != nil {
+		fmt.Printf("Error spawning implementer: %v\n", err)
+		return
+	}
 
-	reviewer := manager.Spawn("reviewer", "Review code for best practices",
+	reviewer, err := manager.Spawn("reviewer", "Review code for best practices",
 		app.WithSubagentPrompt("You are a code review assistant"),
 		app.WithSubagentState(map[string]any{
 			"priority": "low",
 			"strict":   true,
 		}),
 	)
+	if err != nil {
+		fmt.Printf("Error spawning reviewer: %v\n", err)
+		return
+	}
 
-	tester := manager.Spawn("tester", "Write comprehensive tests",
+	tester, err := manager.Spawn("tester", "Write comprehensive tests",
 		app.WithSubagentPrompt("You are a testing assistant"),
 		app.WithSubagentState(map[string]any{
 			"priority":   "medium",
@@ -101,6 +117,10 @@ func main() {
 			"test_types": []string{"unit", "integration"},
 		}),
 	)
+	if err != nil {
+		fmt.Printf("Error spawning tester: %v\n", err)
+		return
+	}
 
 	// Print spawned agents
 	fmt.Printf("Spawned %d subagents:\n", len(manager.List()))
@@ -161,10 +181,18 @@ func main() {
 	manager.Clear()
 
 	// Spawn new targeted agents
-	fast1 := manager.Spawn("fast1", "Quick task 1",
+	fast1, err := manager.Spawn("fast1", "Quick task 1",
 		app.WithSubagentState(map[string]any{"priority": "high"}))
-	fast2 := manager.Spawn("fast2", "Quick task 2",
+	if err != nil {
+		fmt.Printf("Error spawning fast1: %v\n", err)
+		return
+	}
+	fast2, err := manager.Spawn("fast2", "Quick task 2",
 		app.WithSubagentState(map[string]any{"priority": "high"}))
+	if err != nil {
+		fmt.Printf("Error spawning fast2: %v\n", err)
+		return
+	}
 
 	// Run only specific agents
 	specificResults, err := manager.RunAgents(ctx, fast1, fast2)

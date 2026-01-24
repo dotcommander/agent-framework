@@ -139,7 +139,7 @@ func main() {
 		Content: "This is a longer document that will be split into multiple chunks. Each chunk overlaps with the next to preserve context. This helps ensure that important information at chunk boundaries is not lost during processing. The chunking process is essential for handling large documents in embedding-based search systems.",
 	}
 
-	chunks := chunker.Chunk(longDoc)
+	chunks := chunker.Chunk(ctx, longDoc)
 	fmt.Printf("Original document: %d characters\n", len(longDoc.Content))
 	fmt.Printf("Chunked into: %d chunks\n\n", len(chunks))
 
@@ -159,7 +159,7 @@ func main() {
 		Content: "First sentence here. Second sentence follows. Third sentence now. Fourth sentence appears. Fifth and final sentence.",
 	}
 
-	sentenceChunks := sentenceChunker.Chunk(sentenceDoc)
+	sentenceChunks := sentenceChunker.Chunk(ctx, sentenceDoc)
 	fmt.Printf("Sentence chunks (%d):\n", len(sentenceChunks))
 	for i, chunk := range sentenceChunks {
 		fmt.Printf("  %d: %s\n", i+1, chunk.Content)
