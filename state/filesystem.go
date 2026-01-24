@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // Security-related errors.
@@ -551,12 +553,16 @@ type WatchConfig struct {
 	Debounce  time.Duration
 }
 
-// FileWatcher watches files for changes.
+// FileWatcher watches files for changes using fsnotify.
+// This provides event-driven file watching that scales to >10k files
+// without the CPU overhead of polling.
 type FileWatcher struct {
 	config   *WatchConfig
 	store    *FileSystemStore
 	onChange func([]*FileChange)
+	watcher  *fsnotify.Watcher
 	stop     chan struct{}
+	done     chan struct{}
 	running  bool
 	mu       sync.Mutex
 }
@@ -570,6 +576,7 @@ func NewFileWatcher(config *WatchConfig, store *FileSystemStore) *FileWatcher {
 		config: config,
 		store:  store,
 		stop:   make(chan struct{}),
+		done:   make(chan struct{}),
 	}
 }
 
@@ -586,10 +593,18 @@ func (w *FileWatcher) Start() error {
 		w.mu.Unlock()
 		return nil
 	}
+
+	// Create fsnotify watcher
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		w.mu.Unlock()
+		return fmt.Errorf("create watcher: %w", err)
+	}
+	w.watcher = watcher
 	w.running = true
 	w.mu.Unlock()
 
-	// Track initial state
+	// Track initial state and add paths to watcher
 	for _, path := range w.config.Paths {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -597,43 +612,220 @@ func (w *FileWatcher) Start() error {
 		}
 		if info.IsDir() && w.config.Recursive {
 			if err := w.store.TrackDir(path, w.config.Patterns...); err != nil {
+				w.watcher.Close()
+				return err
+			}
+			// Add directory and subdirectories to watcher
+			if err := w.addRecursive(path); err != nil {
+				w.watcher.Close()
 				return err
 			}
 		} else {
 			if err := w.store.Track(path); err != nil {
+				w.watcher.Close()
 				return err
+			}
+			if err := w.watcher.Add(path); err != nil {
+				w.watcher.Close()
+				return fmt.Errorf("watch %s: %w", path, err)
 			}
 		}
 	}
 
-	// Poll for changes (simplified watcher)
-	go func() {
-		ticker := time.NewTicker(w.config.Debounce)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-w.stop:
-				return
-			case <-ticker.C:
-				changes, _ := w.store.DetectChanges()
-				if len(changes) > 0 && w.onChange != nil {
-					w.onChange(changes)
-				}
-			}
-		}
-	}()
+	// Process events
+	go w.eventLoop()
 
 	return nil
 }
 
-// Stop stops watching.
+// addRecursive adds a directory and all subdirectories to the watcher.
+func (w *FileWatcher) addRecursive(root string) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip errors
+		}
+		if info.IsDir() {
+			if err := w.watcher.Add(path); err != nil {
+				return fmt.Errorf("watch %s: %w", path, err)
+			}
+		}
+		return nil
+	})
+}
+
+// eventLoop processes fsnotify events with debouncing.
+func (w *FileWatcher) eventLoop() {
+	defer close(w.done)
+
+	// Debounce: collect events and process after quiet period
+	pending := make(map[string]fsnotify.Event)
+	var timer *time.Timer
+	var timerC <-chan time.Time
+
+	processPending := func() {
+		if len(pending) == 0 {
+			return
+		}
+
+		var changes []*FileChange
+		for path, event := range pending {
+			change := w.processEvent(path, event)
+			if change != nil {
+				changes = append(changes, change)
+			}
+		}
+
+		if len(changes) > 0 && w.onChange != nil {
+			w.onChange(changes)
+		}
+
+		pending = make(map[string]fsnotify.Event)
+	}
+
+	for {
+		select {
+		case <-w.stop:
+			if timer != nil {
+				timer.Stop()
+			}
+			processPending()
+			return
+
+		case event, ok := <-w.watcher.Events:
+			if !ok {
+				return
+			}
+
+			// Skip events for paths that don't match patterns
+			if !w.matchesPatterns(event.Name) {
+				continue
+			}
+
+			// Accumulate event
+			pending[event.Name] = event
+
+			// Handle new directories for recursive watching
+			if event.Has(fsnotify.Create) && w.config.Recursive {
+				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+					_ = w.addRecursive(event.Name)
+				}
+			}
+
+			// Reset debounce timer
+			if timer != nil {
+				timer.Stop()
+			}
+			timer = time.NewTimer(w.config.Debounce)
+			timerC = timer.C
+
+		case <-timerC:
+			processPending()
+			timer = nil
+			timerC = nil
+
+		case err, ok := <-w.watcher.Errors:
+			if !ok {
+				return
+			}
+			// Log errors but continue watching
+			_ = err // Errors are ignored in the simplified implementation
+		}
+	}
+}
+
+// matchesPatterns checks if a path matches the configured patterns.
+func (w *FileWatcher) matchesPatterns(path string) bool {
+	if len(w.config.Patterns) == 0 {
+		return true
+	}
+	base := filepath.Base(path)
+	for _, pattern := range w.config.Patterns {
+		if matched, _ := filepath.Match(pattern, base); matched {
+			return true
+		}
+	}
+	return false
+}
+
+// processEvent converts an fsnotify event to a FileChange.
+func (w *FileWatcher) processEvent(path string, event fsnotify.Event) *FileChange {
+	var changeType string
+	var before, after *FileState
+
+	// Get before state from store
+	w.store.mu.RLock()
+	before = w.store.current[path]
+	w.store.mu.RUnlock()
+
+	if before == nil {
+		before = &FileState{Path: path, Exists: false}
+	}
+
+	switch {
+	case event.Has(fsnotify.Create):
+		changeType = "create"
+		after, _ = w.store.CaptureFile(path)
+		if after == nil {
+			after = &FileState{Path: path, Exists: false}
+		}
+
+	case event.Has(fsnotify.Write):
+		changeType = "modify"
+		after, _ = w.store.CaptureFile(path)
+		if after == nil {
+			return nil
+		}
+		// Skip if hash unchanged (editor save without modifications)
+		if before.Hash == after.Hash {
+			return nil
+		}
+
+	case event.Has(fsnotify.Remove):
+		changeType = "delete"
+		after = &FileState{Path: path, Exists: false}
+
+	case event.Has(fsnotify.Rename):
+		// Treat rename as delete; the new name will trigger Create
+		changeType = "delete"
+		after = &FileState{Path: path, Exists: false}
+
+	default:
+		return nil
+	}
+
+	change := &FileChange{
+		Path:       path,
+		ChangeType: changeType,
+		Before:     before,
+		After:      after,
+		Timestamp:  time.Now(),
+	}
+
+	// Update store state
+	w.store.mu.Lock()
+	w.store.changes = append(w.store.changes, change)
+	w.store.current[path] = after
+	w.store.mu.Unlock()
+
+	return change
+}
+
+// Stop stops watching and cleans up resources.
 func (w *FileWatcher) Stop() {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	if !w.running {
+		w.mu.Unlock()
+		return
+	}
+	w.running = false
+	w.mu.Unlock()
 
-	if w.running {
-		close(w.stop)
-		w.running = false
+	// Signal stop and wait for eventLoop to finish
+	close(w.stop)
+	<-w.done
+
+	// Close the watcher
+	if w.watcher != nil {
+		w.watcher.Close()
 	}
 }
