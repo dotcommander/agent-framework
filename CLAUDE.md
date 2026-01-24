@@ -31,21 +31,6 @@ Install via:
 go get github.com/dotcommander/agent-framework
 ```
 
-### Local Development
-
-For local development with agent-sdk-go, uncomment the `replace` directive in go.mod:
-```
-// replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
-```
-
-Then clone both repos as siblings:
-
-```bash
-git clone https://github.com/dotcommander/agent.git
-git clone https://github.com/dotcommander/agent-sdk-go.git
-cd agent && go build ./...
-```
-
 ## Examples
 
 The `examples/` directory contains runnable examples for each major feature:

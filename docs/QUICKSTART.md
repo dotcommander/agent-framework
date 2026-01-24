@@ -6,7 +6,6 @@ Get started with the Agent CLI Framework in 5 minutes.
 
 - Go 1.22 or later
 - Claude CLI installed and configured
-- agent-sdk-go repository cloned to `../agent-sdk-go`
 
 ## Installation
 
@@ -219,10 +218,10 @@ which claude
 
 ### "Module not found"
 
-Verify the replace directive in go.mod points to the correct path:
+Run go mod tidy to fetch dependencies:
 
-```go
-replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
+```bash
+go mod tidy
 ```
 
 ### Build errors

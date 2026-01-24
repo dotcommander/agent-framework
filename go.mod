@@ -2,9 +2,6 @@ module github.com/dotcommander/agent-framework
 
 go 1.24.0
 
-// Uncomment for local development with sibling SDK checkout:
-// replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
-
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/dotcommander/agent-sdk-go v0.1.4

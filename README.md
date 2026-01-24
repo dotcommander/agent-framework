@@ -39,19 +39,6 @@ Agent framework for building Claude-powered CLI tools using [agent-sdk-go](https
 go get github.com/dotcommander/agent-framework
 ```
 
-### Local Development
-
-For contributing or modifying the SDK:
-
-```bash
-# Clone both repositories as siblings
-git clone https://github.com/dotcommander/agent.git
-git clone https://github.com/dotcommander/agent-sdk-go.git
-
-# Uncomment replace directive in go.mod, then build
-cd agent && go build ./...
-```
-
 ## Quick Start
 
 ### One-Liner (Simplest)
@@ -440,17 +427,6 @@ go build -o agent-example ./cmd/agent
 # Install to PATH
 ln -sf "$(pwd)/agent-example" ~/go/bin/agent-example
 ```
-
-## Development Setup
-
-For local development with agent-sdk-go, uncomment the `replace` directive in go.mod:
-
-```go
-// go.mod (uncomment for local development)
-// replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
-```
-
-Then clone both repositories as siblings for the replace directive to resolve.
 
 ## Design Principles
 
