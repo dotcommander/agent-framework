@@ -2,9 +2,9 @@
 package state
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,36 +13,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dotcommander/agent-framework/internal/pathutil"
 	"github.com/fsnotify/fsnotify"
+)
+
+// File watcher defaults.
+const (
+	// DefaultWatchDebounce is the default debounce duration for file watch events.
+	// Multiple rapid events are coalesced into a single change notification.
+	DefaultWatchDebounce = 100 * time.Millisecond
 )
 
 // Security-related errors.
 var (
-	ErrPathOutsideBase = errors.New("path outside allowed base directory")
-	ErrPathTraversal   = errors.New("path traversal detected")
+	ErrPathOutsideBase = pathutil.ErrPathOutsideBase
+	ErrPathTraversal   = pathutil.ErrPathTraversal
 )
-
-// sanitizePathError returns a user-safe error message that doesn't expose
-// sensitive path information. The original error is preserved for logging.
-func sanitizePathError(operation string, err error) error {
-	if err == nil {
-		return nil
-	}
-
-	// Check for known error types and return sanitized messages
-	if os.IsNotExist(err) {
-		return fmt.Errorf("%s: file not found", operation)
-	}
-	if os.IsPermission(err) {
-		return fmt.Errorf("%s: permission denied", operation)
-	}
-	if os.IsTimeout(err) {
-		return fmt.Errorf("%s: operation timed out", operation)
-	}
-
-	// For path-related errors, return generic message
-	return fmt.Errorf("%s: operation failed", operation)
-}
 
 // FileState represents the state of a file at a point in time.
 type FileState struct {
@@ -144,7 +130,7 @@ func (s *FileSystemStore) validatePath(path string) (string, error) {
 	cleanPath := filepath.Clean(absPath)
 
 	// Check for traversal patterns in original input
-	if containsTraversal(path) {
+	if pathutil.ContainsTraversal(path) {
 		return "", ErrPathTraversal
 	}
 
@@ -162,28 +148,6 @@ func (s *FileSystemStore) validatePath(path string) (string, error) {
 	}
 
 	return cleanPath, nil
-}
-
-// containsTraversal checks if a path contains obvious traversal patterns.
-func containsTraversal(path string) bool {
-	normalized := filepath.ToSlash(path)
-
-	patterns := []string{
-		"../",
-		"..\\",
-		"..%2f",
-		"..%5c",
-		"%2e%2e/",
-		"%2e%2e\\",
-	}
-
-	for _, pattern := range patterns {
-		if strings.Contains(strings.ToLower(normalized), strings.ToLower(pattern)) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // CaptureFile captures the current state of a file.
@@ -210,7 +174,7 @@ func (s *FileSystemStore) captureFileInternal(validPath string) (*FileState, err
 		}, nil
 	}
 	if err != nil {
-		return nil, sanitizePathError("stat", err)
+		return nil, pathutil.SanitizeError("stat", err)
 	}
 
 	state := &FileState{
@@ -224,7 +188,7 @@ func (s *FileSystemStore) captureFileInternal(validPath string) (*FileState, err
 	// Calculate hash
 	hash, err := hashFile(validPath)
 	if err != nil {
-		return nil, sanitizePathError("hash", err)
+		return nil, pathutil.SanitizeError("hash", err)
 	}
 	state.Hash = hash
 
@@ -342,7 +306,11 @@ func (s *FileSystemStore) DetectChanges() ([]*FileChange, error) {
 
 // RecordChange manually records a file change.
 func (s *FileSystemStore) RecordChange(path string, changeType string) error {
+	// Get before state under read lock
+	s.mu.RLock()
 	before := s.current[path]
+	s.mu.RUnlock()
+
 	if before == nil {
 		before = &FileState{Path: path, Exists: false}
 	}
@@ -609,6 +577,8 @@ type FileWatcher struct {
 	watcher  *fsnotify.Watcher
 	stop     chan struct{}
 	done     chan struct{}
+	ctx      context.Context    // Context for cancellation
+	cancel   context.CancelFunc // Cancel function for context
 	running  bool
 	mu       sync.Mutex
 }
@@ -616,7 +586,7 @@ type FileWatcher struct {
 // NewFileWatcher creates a file watcher.
 func NewFileWatcher(config *WatchConfig, store *FileSystemStore) *FileWatcher {
 	if config.Debounce == 0 {
-		config.Debounce = 100 * time.Millisecond
+		config.Debounce = DefaultWatchDebounce
 	}
 	return &FileWatcher{
 		config: config,
@@ -627,37 +597,64 @@ func NewFileWatcher(config *WatchConfig, store *FileSystemStore) *FileWatcher {
 }
 
 // OnChange sets the callback for file changes.
+// Must be called before Start() or behavior is undefined.
 func (w *FileWatcher) OnChange(fn func([]*FileChange)) *FileWatcher {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.onChange = fn
 	return w
 }
 
 // OnError sets the callback for watcher errors.
 // If not set, errors are logged to stderr.
+// Must be called before Start() or behavior is undefined.
 func (w *FileWatcher) OnError(fn func(error)) *FileWatcher {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.onError = fn
 	return w
 }
 
 // Start begins watching for changes.
+// Deprecated: Use StartWithContext for proper context cancellation support.
 func (w *FileWatcher) Start() error {
+	return w.StartWithContext(context.Background())
+}
+
+// StartWithContext begins watching for changes with context cancellation support.
+// The watcher will stop when the context is cancelled.
+func (w *FileWatcher) StartWithContext(ctx context.Context) error {
 	w.mu.Lock()
 	if w.running {
 		w.mu.Unlock()
 		return nil
 	}
 
-	// Create fsnotify watcher
+	// Create fsnotify watcher - don't store it yet until setup succeeds
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		w.mu.Unlock()
 		return fmt.Errorf("create watcher: %w", err)
 	}
-	w.watcher = watcher
-	w.running = true
+
+	// Prepare channels for potential restart after Stop()
+	// Don't assign to struct fields until setup succeeds
+	stopChan := make(chan struct{})
+	doneChan := make(chan struct{})
+
+	// Create a derived context so we can cancel it on Stop()
+	watchCtx, cancel := context.WithCancel(ctx)
 	w.mu.Unlock()
 
+	// cleanup closes watcher and cancels context on error
+	cleanup := func() {
+		cancel()
+		_ = watcher.Close()
+	}
+
 	// Track initial state and add paths to watcher
+	// This is done outside the lock since it involves I/O
+	// On any error, close watcher and return without modifying struct state
 	for _, path := range w.config.Paths {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -665,40 +662,57 @@ func (w *FileWatcher) Start() error {
 		}
 		if info.IsDir() && w.config.Recursive {
 			if err := w.store.TrackDir(path, w.config.Patterns...); err != nil {
-				_ = w.watcher.Close()
+				cleanup()
 				return err
 			}
 			// Add directory and subdirectories to watcher
-			if err := w.addRecursive(path); err != nil {
-				_ = w.watcher.Close()
+			if err := w.addRecursiveWithWatcher(watcher, path); err != nil {
+				cleanup()
 				return err
 			}
 		} else {
 			if err := w.store.Track(path); err != nil {
-				_ = w.watcher.Close()
+				cleanup()
 				return err
 			}
-			if err := w.watcher.Add(path); err != nil {
-				_ = w.watcher.Close()
+			if err := watcher.Add(path); err != nil {
+				cleanup()
 				return fmt.Errorf("watch %s: %w", path, err)
 			}
 		}
 	}
 
-	// Process events
-	go w.eventLoop()
+	// Setup succeeded - atomically update all state under lock
+	w.mu.Lock()
+	w.watcher = watcher
+	w.stop = stopChan
+	w.done = doneChan
+	w.ctx = watchCtx
+	w.cancel = cancel
+	w.running = true
+	w.mu.Unlock()
+
+	// Process events with context
+	go w.eventLoop(watchCtx)
 
 	return nil
 }
 
 // addRecursive adds a directory and all subdirectories to the watcher.
+// Uses the watcher stored in w.watcher - only safe to call after Start() completes.
 func (w *FileWatcher) addRecursive(root string) error {
+	return w.addRecursiveWithWatcher(w.watcher, root)
+}
+
+// addRecursiveWithWatcher adds a directory and all subdirectories to the given watcher.
+// This variant is used during initialization when w.watcher isn't set yet.
+func (w *FileWatcher) addRecursiveWithWatcher(watcher *fsnotify.Watcher, root string) error {
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip errors
 		}
 		if info.IsDir() {
-			if err := w.watcher.Add(path); err != nil {
+			if err := watcher.Add(path); err != nil {
 				return fmt.Errorf("watch %s: %w", path, err)
 			}
 		}
@@ -707,13 +721,24 @@ func (w *FileWatcher) addRecursive(root string) error {
 }
 
 // eventLoop processes fsnotify events with debouncing.
-func (w *FileWatcher) eventLoop() {
+// The context is checked for cancellation to enable graceful shutdown.
+func (w *FileWatcher) eventLoop(ctx context.Context) {
 	defer close(w.done)
 
 	// Debounce: collect events and process after quiet period
 	pending := make(map[string]fsnotify.Event)
 	var timer *time.Timer
 	var timerC <-chan time.Time
+
+	// getCallbacks safely retrieves callbacks under lock.
+	// Returns copies to avoid holding lock during callback invocation.
+	getCallbacks := func() (onChange func([]*FileChange), onError func(error)) {
+		w.mu.Lock()
+		onChange = w.onChange
+		onError = w.onError
+		w.mu.Unlock()
+		return
+	}
 
 	processPending := func() {
 		if len(pending) == 0 {
@@ -728,8 +753,11 @@ func (w *FileWatcher) eventLoop() {
 			}
 		}
 
-		if len(changes) > 0 && w.onChange != nil {
-			w.onChange(changes)
+		if len(changes) > 0 {
+			onChange, _ := getCallbacks()
+			if onChange != nil {
+				onChange(changes)
+			}
 		}
 
 		pending = make(map[string]fsnotify.Event)
@@ -737,6 +765,14 @@ func (w *FileWatcher) eventLoop() {
 
 	for {
 		select {
+		case <-ctx.Done():
+			// Context cancelled - graceful shutdown
+			if timer != nil {
+				timer.Stop()
+			}
+			processPending()
+			return
+
 		case <-w.stop:
 			if timer != nil {
 				timer.Stop()
@@ -780,9 +816,10 @@ func (w *FileWatcher) eventLoop() {
 			if !ok {
 				return
 			}
-			// Call error callback or log to stderr
-			if w.onError != nil {
-				w.onError(err)
+			// Call error callback or log to stderr (get callback safely)
+			_, onError := getCallbacks()
+			if onError != nil {
+				onError(err)
 			} else {
 				fmt.Fprintf(os.Stderr, "file watcher error: %v\n", err)
 			}
@@ -862,6 +899,10 @@ func (w *FileWatcher) processEvent(path string, event fsnotify.Event) *FileChang
 	w.store.mu.Lock()
 	w.store.changes = append(w.store.changes, change)
 	w.store.current[path] = after
+	// Evict oldest changes if limit exceeded
+	if w.store.maxChanges > 0 && len(w.store.changes) > w.store.maxChanges {
+		w.store.changes = w.store.changes[len(w.store.changes)-w.store.maxChanges:]
+	}
 	w.store.mu.Unlock()
 
 	return change
@@ -875,7 +916,13 @@ func (w *FileWatcher) Stop() {
 		return
 	}
 	w.running = false
+	cancel := w.cancel
 	w.mu.Unlock()
+
+	// Cancel context to signal shutdown
+	if cancel != nil {
+		cancel()
+	}
 
 	// Signal stop and wait for eventLoop to finish
 	close(w.stop)

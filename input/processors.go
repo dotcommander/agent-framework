@@ -12,19 +12,21 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/dotcommander/agent-framework/internal/pathutil"
 )
 
 // Security-related errors.
 var (
-	ErrPathTraversal     = errors.New("path traversal detected")
-	ErrPathOutsideBase   = errors.New("path outside allowed base directory")
-	ErrBlockedURL        = errors.New("URL is blocked")
-	ErrPrivateIP         = errors.New("private IP addresses are not allowed")
-	ErrInvalidScheme     = errors.New("only http and https schemes are allowed")
+	ErrPathTraversal      = pathutil.ErrPathTraversal
+	ErrPathOutsideBase    = pathutil.ErrPathOutsideBase
+	ErrBlockedURL         = errors.New("URL is blocked")
+	ErrPrivateIP          = errors.New("private IP addresses are not allowed")
+	ErrInvalidScheme      = errors.New("only http and https schemes are allowed")
 	ErrBlockedContentType = errors.New("content type is not allowed")
-	ErrFileTooLarge      = errors.New("file exceeds maximum size limit")
-	ErrTooManyFiles      = errors.New("glob pattern matched too many files")
-	ErrTotalSizeExceeded = errors.New("total file size exceeds limit")
+	ErrFileTooLarge       = errors.New("file exceeds maximum size limit")
+	ErrTooManyFiles       = errors.New("glob pattern matched too many files")
+	ErrTotalSizeExceeded  = errors.New("total file size exceeds limit")
 )
 
 // blockedContentTypes contains MIME types that should not be processed.
@@ -58,30 +60,6 @@ const (
 	DefaultMaxTotalBytes = 50 * 1024 * 1024  // 50MB
 	DefaultMaxURLBytes   = 10 * 1024 * 1024  // 10MB
 )
-
-// sanitizePathError returns a user-safe error message that doesn't expose
-// sensitive path information. The original error is preserved for logging.
-// Use this when returning errors that might contain full file paths.
-func sanitizePathError(operation string, err error) error {
-	if err == nil {
-		return nil
-	}
-
-	// Check for known error types and return sanitized messages
-	if os.IsNotExist(err) {
-		return fmt.Errorf("%s: file not found", operation)
-	}
-	if os.IsPermission(err) {
-		return fmt.Errorf("%s: permission denied", operation)
-	}
-	if os.IsTimeout(err) {
-		return fmt.Errorf("%s: operation timed out", operation)
-	}
-
-	// For path-related errors, return generic message
-	// This prevents exposing absolute paths in error messages
-	return fmt.Errorf("%s: operation failed", operation)
-}
 
 // Processor processes input and returns Content.
 type Processor interface {
@@ -373,7 +351,7 @@ func (p *FileProcessor) Process(ctx context.Context, value string) (*Content, er
 	// Check file size before reading
 	info, err := os.Stat(cleanPath)
 	if err != nil {
-		return nil, sanitizePathError("stat file", err)
+		return nil, pathutil.SanitizeError("stat file", err)
 	}
 
 	if info.Size() > p.maxFileSize {
@@ -382,7 +360,7 @@ func (p *FileProcessor) Process(ctx context.Context, value string) (*Content, er
 
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return nil, sanitizePathError("read file", err)
+		return nil, pathutil.SanitizeError("read file", err)
 	}
 
 	content := NewContent(TypeFile, cleanPath)
@@ -405,7 +383,7 @@ func (p *FileProcessor) validatePath(path string) (string, error) {
 	cleanPath := filepath.Clean(absPath)
 
 	// Check for path traversal patterns in original input
-	if containsTraversal(path) {
+	if pathutil.ContainsTraversal(path) {
 		return "", ErrPathTraversal
 	}
 
@@ -430,32 +408,6 @@ func (p *FileProcessor) validatePath(path string) (string, error) {
 	}
 
 	return cleanPath, nil
-}
-
-// containsTraversal checks if a path contains obvious traversal patterns.
-func containsTraversal(path string) bool {
-	// Normalize path separators for checking
-	normalized := filepath.ToSlash(path)
-
-	// Check for various traversal patterns
-	patterns := []string{
-		"../",
-		"..\\",
-		"/etc/passwd",
-		"/etc/shadow",
-		"..%2f",
-		"..%5c",
-		"%2e%2e/",
-		"%2e%2e\\",
-	}
-
-	for _, pattern := range patterns {
-		if strings.Contains(strings.ToLower(normalized), strings.ToLower(pattern)) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // CanProcess returns true for file types.
