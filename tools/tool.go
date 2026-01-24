@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/dotcommander/agent/internal/conv"
+	"github.com/dotcommander/agent-framework/internal/conv"
 )
 
 // InputValidationError represents a validation failure for tool input.

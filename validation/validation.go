@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/dotcommander/agent/internal/conv"
+	"github.com/dotcommander/agent-framework/internal/conv"
 )
 
 // ValidationError represents a validation failure.

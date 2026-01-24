@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dotcommander/agent/internal/pathutil"
+	"github.com/dotcommander/agent-framework/internal/pathutil"
 )
 
 // Security-related errors.

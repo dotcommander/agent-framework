@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dotcommander/agent/internal/pathutil"
+	"github.com/dotcommander/agent-framework/internal/pathutil"
 	"github.com/fsnotify/fsnotify"
 )
 

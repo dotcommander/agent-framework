@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dotcommander/agent/internal/pathutil"
+	"github.com/dotcommander/agent-framework/internal/pathutil"
 	"github.com/fsnotify/fsnotify"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

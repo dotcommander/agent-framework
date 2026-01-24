@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/dotcommander/agent/state"
+	"github.com/dotcommander/agent-framework/state"
 )
 
 func main() {
