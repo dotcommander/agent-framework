@@ -3,8 +3,13 @@ package app
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
+
+// ShutdownHook is a function called during graceful shutdown.
+// The context has the shutdown timeout applied.
+type ShutdownHook func(ctx context.Context) error
 
 // LoopState represents the current state of an agent loop iteration.
 type LoopState struct {
@@ -93,6 +98,10 @@ type LoopConfig struct {
 	// Timeout for the entire loop.
 	Timeout time.Duration
 
+	// ShutdownTimeout is the maximum time to wait for shutdown hooks.
+	// Default: 30 seconds.
+	ShutdownTimeout time.Duration
+
 	// StopOnError halts the loop on first error.
 	StopOnError bool
 
@@ -108,11 +117,12 @@ type LoopConfig struct {
 // DefaultLoopConfig returns sensible defaults.
 func DefaultLoopConfig() *LoopConfig {
 	return &LoopConfig{
-		MaxIterations: 50,
-		MaxTokens:     100000,
-		Timeout:       30 * time.Minute,
-		StopOnError:   false,
-		MinScore:      0.0,
+		MaxIterations:   50,
+		MaxTokens:       100000,
+		Timeout:         30 * time.Minute,
+		ShutdownTimeout: 30 * time.Second,
+		StopOnError:     false,
+		MinScore:        0.0,
 	}
 }
 
@@ -120,6 +130,9 @@ func DefaultLoopConfig() *LoopConfig {
 type LoopRunner struct {
 	loop   AgentLoop
 	config *LoopConfig
+
+	mu            sync.Mutex
+	shutdownHooks []ShutdownHook
 }
 
 // NewLoopRunner creates a new loop runner.
@@ -133,8 +146,61 @@ func NewLoopRunner(loop AgentLoop, config *LoopConfig) *LoopRunner {
 	}
 }
 
+// OnShutdown registers a hook to be called during graceful shutdown.
+// Hooks are called in reverse registration order (LIFO).
+// The hook receives a context with the shutdown timeout applied.
+func (r *LoopRunner) OnShutdown(hook ShutdownHook) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.shutdownHooks = append(r.shutdownHooks, hook)
+}
+
+// runShutdownHooks executes all registered shutdown hooks in LIFO order.
+// Returns the first error encountered, but continues executing all hooks.
+func (r *LoopRunner) runShutdownHooks() error {
+	r.mu.Lock()
+	hooks := make([]ShutdownHook, len(r.shutdownHooks))
+	copy(hooks, r.shutdownHooks)
+	r.mu.Unlock()
+
+	if len(hooks) == 0 {
+		return nil
+	}
+
+	timeout := r.config.ShutdownTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var firstErr error
+	// Execute in reverse order (LIFO)
+	for i := len(hooks) - 1; i >= 0; i-- {
+		if err := hooks[i](ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	return firstErr
+}
+
 // Run executes the agent loop until completion or limit.
-func (r *LoopRunner) Run(ctx context.Context) (*LoopState, error) {
+// Shutdown hooks are called when the loop exits (for any reason).
+func (r *LoopRunner) Run(ctx context.Context) (state *LoopState, err error) {
+	// Always run shutdown hooks on exit
+	defer func() {
+		if shutdownErr := r.runShutdownHooks(); shutdownErr != nil {
+			// If we already have an error, wrap both; otherwise use shutdown error
+			if err != nil {
+				err = fmt.Errorf("%w; shutdown error: %v", err, shutdownErr)
+			} else {
+				err = fmt.Errorf("shutdown error: %w", shutdownErr)
+			}
+		}
+	}()
+
 	// Apply timeout if configured
 	if r.config.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -142,7 +208,7 @@ func (r *LoopRunner) Run(ctx context.Context) (*LoopState, error) {
 		defer cancel()
 	}
 
-	state := &LoopState{
+	state = &LoopState{
 		Iteration: 0,
 		StartedAt: time.Now(),
 	}
