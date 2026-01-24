@@ -1,0 +1,420 @@
+# Agent CLI Framework
+
+[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
+
+A reusable Go framework for building Claude-powered CLI tools using [github.com/dotcommander/agent-sdk-go](https://github.com/dotcommander/agent-sdk-go).
+
+## Features
+
+### Core Capabilities
+
+- **Multi-provider support** - Anthropic (via agent-sdk-go), Z.AI, Synthetic (for testing)
+- **Automatic input detection** - URLs, files, glob patterns, plain text
+- **Flexible output formatting** - JSON, Markdown, plain text with code generation support
+- **Type-safe tool registration** - Generic handlers with automatic type conversion
+- **CLI scaffolding** - Built on Cobra for consistent CLI patterns
+- **Composable design** - Import packages and wire together custom applications
+
+### New in v1.0
+
+1. **Agent Loop** - Gather, decide, act, verify pattern with configurable iteration limits, token budgets, and verification thresholds
+2. **Subagent Spawning** - Parallel execution with isolated contexts, concurrent workers via errgroup, and result aggregation
+3. **MCP Integration** - Full Model Context Protocol server/client implementation for tool discovery and invocation
+4. **Rules-Based Validation** - Composable rule sets with built-in validators (Required, Regex, Enum, Range, Length, Custom)
+5. **Visual Verification** - Screenshot capture, baseline comparison, pixel-based diffing, and AI-powered visual analysis
+6. **File System State** - Track files, create snapshots, detect changes, and rollback to previous states
+7. **Hierarchical Evaluation** - Multi-level checks (syntax, semantic, behavioral, visual) with weighted scoring and rubrics
+8. **Semantic Search** - Embedding-based code search with chunking strategies and hybrid keyword/vector search
+9. **Code Generation Output** - Structured diffs, code blocks, and change tracking with markdown/JSON formatting
+10. **Context Compaction** - Token-aware summarization to manage long conversations within context limits
+
+## Installation
+
+```bash
+go get github.com/dotcommander/agent
+```
+
+## Quick Start
+
+### Simple CLI Application
+
+```go
+package main
+
+import (
+    "log"
+    "github.com/dotcommander/agent/app"
+)
+
+func main() {
+    application := app.New("myapp", "1.0.0",
+        app.WithSystemPrompt("You are a helpful assistant."),
+        app.WithModel("claude-sonnet-4-20250514"),
+    )
+
+    if err := application.Run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+### With Custom Tools
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/dotcommander/agent/app"
+    "github.com/dotcommander/agent/tools"
+)
+
+func main() {
+    // Define a type-safe tool
+    greetTool := tools.TypedTool(
+        "greet",
+        "Greets a person by name",
+        map[string]any{
+            "type": "object",
+            "properties": map[string]any{
+                "name": map[string]any{
+                    "type":        "string",
+                    "description": "The name of the person to greet",
+                },
+            },
+            "required": []string{"name"},
+        },
+        func(ctx context.Context, input struct {
+            Name string `json:"name"`
+        }) (struct {
+            Message string `json:"message"`
+        }, error) {
+            return struct {
+                Message string `json:"message"`
+            }{
+                Message: fmt.Sprintf("Hello, %s!", input.Name),
+            }, nil
+        },
+    )
+
+    application := app.New("myapp", "1.0.0",
+        app.WithSystemPrompt("You are a helpful assistant."),
+        app.WithTool(greetTool),
+    )
+
+    if err := application.Run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+### Agent Loop Example
+
+```go
+package main
+
+import (
+    "context"
+    "github.com/dotcommander/agent/app"
+)
+
+func main() {
+    // Create a simple loop with gather -> decide -> act -> verify pattern
+    loop := app.NewSimpleLoop(
+        app.WithGatherFunc(func(ctx context.Context, state *app.LoopState) (*app.LoopContext, error) {
+            // Gather context for this iteration
+            return &app.LoopContext{State: make(map[string]any)}, nil
+        }),
+        app.WithDecideFunc(func(ctx context.Context, state *app.LoopState) (*app.Action, error) {
+            // Decide what action to take
+            return &app.Action{Type: "tool_call", ToolName: "search"}, nil
+        }),
+        app.WithVerifyFunc(func(ctx context.Context, state *app.LoopState) (*app.Feedback, error) {
+            // Verify the result
+            return &app.Feedback{Valid: true, Score: 0.95}, nil
+        }),
+    )
+
+    runner := app.NewLoopRunner(loop, &app.LoopConfig{
+        MaxIterations: 10,
+        MaxTokens:     50000,
+    })
+
+    state, err := runner.Run(context.Background())
+    // ...
+}
+```
+
+## Architecture
+
+The framework is organized into focused packages following Single Responsibility:
+
+### `/app` - Application Composition & Agent Loop
+
+Main application structure with functional options pattern, plus the core agent loop and subagent spawning.
+
+```go
+// Application setup
+app := app.New("myapp", "1.0.0",
+    app.WithSystemPrompt("..."),
+    app.WithModel("..."),
+    app.WithTool(myTool),
+)
+
+// Subagent management
+manager := app.NewSubagentManager(app.DefaultSubagentConfig(), executor)
+agent := manager.Spawn("analyzer", "Analyze this code",
+    app.WithSubagentPrompt("You are a code analyzer."),
+)
+results, _ := manager.RunAll(ctx)
+```
+
+### `/client` - AI Client Wrapper & Compaction
+
+Clean interface around the agent-sdk-go client with multi-provider support and context compaction.
+
+```go
+client, err := client.New(ctx, claude.WithModel("claude-sonnet-4-20250514"))
+response, err := client.Query(ctx, "What is the capital of France?")
+
+// Context compaction for long conversations
+compactor := client.NewSimpleCompactor(nil, summarizer)
+if compactor.ShouldCompact(messages, 100000) {
+    messages, _ = compactor.Compact(ctx, messages)
+}
+```
+
+### `/cli` - CLI Scaffolding
+
+Cobra command builder with standard flags.
+
+```go
+cmd := cli.NewCommand("query", "Send a query", func(cmd *cobra.Command, args []string) error {
+    // Handle command
+    return nil
+})
+```
+
+### `/config` - Configuration Types
+
+Configuration types and functional options.
+
+```go
+cfg := config.NewConfig(
+    config.WithModel("claude-sonnet-4-20250514"),
+    config.WithTimeout(60 * time.Second),
+)
+```
+
+### `/input` - Input Processing
+
+Automatic detection and processing of URLs, files, globs, and text.
+
+```go
+registry := input.NewRegistry()
+content, err := registry.Process(ctx, "https://example.com")
+```
+
+### `/output` - Output Formatting & Code Generation
+
+Pluggable formatters for JSON, Markdown, and text, plus structured code output.
+
+```go
+// Basic formatting
+dispatcher := output.NewDispatcher()
+dispatcher.RegisterFormatter(output.NewJSONFormatter(true))
+err := dispatcher.Write(ctx, result, output.FormatJSON, "output.json")
+
+// Code generation
+gen := output.NewCodeGenerator()
+gen.AddModify("main.go", oldContent, newContent, "Fix bug in handler")
+output := gen.Build()
+markdown := output.FormatMarkdown()
+```
+
+### `/tools` - Tool Registration & MCP
+
+Type-safe tool registration with generic handlers and MCP server/client.
+
+```go
+// Type-safe tools
+tool := tools.TypedTool(
+    "calculate",
+    "Performs calculations",
+    schema,
+    func(ctx context.Context, input CalculateInput) (CalculateOutput, error) {
+        // Handle tool invocation
+    },
+)
+
+// MCP server
+server := tools.NewMCPServer("my-server", tools.WithMCPVersion("1.0.0"))
+server.RegisterTool(myTool)
+response := server.HandleRequest(ctx, request)
+```
+
+### `/validation` - Rules-Based Validation
+
+Composable validation rules for structured output validation.
+
+```go
+rules := validation.NewRuleSet("user",
+    validation.Required("name"),
+    validation.Regex("email", `^[\w-\.]+@[\w-]+\.\w+$`, "invalid email"),
+    validation.Enum("role", "admin", "user", "guest"),
+    validation.Range("age", 0, 150),
+)
+
+validator := validation.NewValidator(rules)
+result := validator.Validate(data)
+```
+
+### `/verification` - Visual & Hierarchical Evaluation
+
+Screenshot comparison and multi-level verification with rubrics.
+
+```go
+// Visual verification
+verifier := verification.NewVisualVerifier(config, capturer, comparator)
+result, _ := verifier.Verify(ctx, "http://localhost:8080", baseline)
+
+// Hierarchical evaluation
+evaluator := verification.NewEvaluator(
+    verification.WithThreshold(verification.LevelSyntax, 1.0),
+    verification.WithThreshold(verification.LevelBehavioral, 0.8),
+)
+evaluator.AddChecks(
+    verification.CommonChecks{}.BuildCheck(buildFn),
+    verification.CommonChecks{}.TestCheck(testFn),
+)
+result, _ := evaluator.Evaluate(ctx, target)
+```
+
+### `/state` - File System State Tracking
+
+Track file changes, create snapshots, and rollback modifications.
+
+```go
+store := state.NewFileSystemStore("/project")
+store.TrackDir("/project/src", "*.go")
+
+// Create snapshot before changes
+snapshot := store.CreateSnapshot("before refactoring")
+
+// Detect changes
+changes, _ := store.DetectChanges()
+
+// Rollback if needed
+store.Rollback(snapshot.ID)
+```
+
+### `/search` - Semantic Search
+
+Embedding-based code search with chunking and hybrid search.
+
+```go
+index := search.NewSemanticIndex(embedder, search.NewFixedSizeChunker(512, 64))
+index.Add(ctx, &search.Document{ID: "main.go", Content: code})
+
+// Semantic search
+results, _ := index.Search(ctx, "error handling pattern", 10)
+
+// Hybrid search (semantic + keyword)
+results, _ := index.HybridSearch(ctx, "parse JSON", 10, 0.3)
+```
+
+## Example Applications
+
+See `/cmd/agent/main.go` for a complete example demonstrating:
+
+- Type-safe tool registration
+- Custom system prompts
+- Graceful error handling
+
+## Building
+
+```bash
+# Build all packages
+go build ./...
+
+# Build example
+go build -o agent-example ./cmd/agent
+
+# Install to PATH
+ln -sf "$(pwd)/agent-example" ~/go/bin/agent-example
+```
+
+## Module Setup
+
+This framework uses a `replace` directive to point to the local agent-sdk-go during development:
+
+```go
+// go.mod
+module github.com/dotcommander/agent
+
+go 1.22
+
+require (
+    github.com/dotcommander/agent-sdk-go v0.0.0
+    github.com/spf13/cobra v1.10.2
+)
+
+replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
+```
+
+**For users:** If you're importing this module and agent-sdk-go isn't published to a module proxy, you have two options:
+
+1. **Add your own replace directive** pointing to your local clone of agent-sdk-go
+2. **Wait for a published release** where the replace directive is removed and proper versions are tagged
+
+To use locally:
+
+```bash
+# Clone both repositories as siblings
+git clone https://github.com/dotcommander/agent-sdk-go
+git clone https://github.com/dotcommander/agent
+
+# The replace directive will resolve ../agent-sdk-go automatically
+cd agent && go build ./...
+```
+
+## Design Principles
+
+1. **Composable** - Import packages and wire together, not a monolithic framework
+2. **Type-safe** - Generic handlers provide compile-time type checking
+3. **Idiomatic Go** - Functional options, interfaces, clear error handling
+4. **Focused packages** - Each package has a single responsibility
+5. **Extensible** - Register custom processors, formatters, tools, and validators
+
+## Providers
+
+### Anthropic (Default)
+
+Uses the agent-sdk-go library to communicate with Claude CLI.
+
+```go
+app.WithProvider("anthropic")
+```
+
+### Z.AI (Placeholder)
+
+```go
+app.WithProvider("zai")
+```
+
+### Synthetic (Placeholder)
+
+For testing without API calls.
+
+```go
+app.WithProvider("synthetic")
+```
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file.
