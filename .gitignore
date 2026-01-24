@@ -20,6 +20,10 @@ go.work
 # Build artifacts
 agent-example
 advanced-example
+codegen
+loop
+mcp
+subagents
 *.log
 
 # IDE
