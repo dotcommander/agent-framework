@@ -120,7 +120,7 @@ func TestSemanticIndex_Pagination(t *testing.T) {
 	ctx := context.Background()
 
 	// Add 10 documents
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		err := idx.Add(ctx, &Document{
 			ID:      string(rune('a' + i)),
 			Content: "content",
@@ -163,7 +163,7 @@ func TestSemanticIndex_PaginationBeyondResults(t *testing.T) {
 	ctx := context.Background()
 
 	// Add 5 documents
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_ = idx.Add(ctx, &Document{
 			ID:      string(rune('a' + i)),
 			Content: "content",
@@ -226,7 +226,7 @@ func TestSemanticIndex_Clear(t *testing.T) {
 	ctx := context.Background()
 
 	// Add documents
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_ = idx.Add(ctx, &Document{
 			ID:      string(rune('a' + i)),
 			Content: "content",
@@ -260,7 +260,7 @@ func TestSearchByEmbeddingWithOptions(t *testing.T) {
 	ctx := context.Background()
 
 	// Add documents with pre-computed embeddings
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		emb := make(Embedding, 8)
 		for j := range emb {
 			emb[j] = float64(i+1) * 0.1 * float64(j+1)
