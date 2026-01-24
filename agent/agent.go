@@ -55,7 +55,27 @@ func Run(systemPrompt string, opts ...Option) error {
 //
 //	response, err := agent.Query(ctx, "Explain goroutines in one sentence.")
 func Query(ctx context.Context, prompt string, opts ...Option) (string, error) {
-	return New("agent").Apply(opts...).Query(ctx, prompt)
+	resp, err := New("agent").Apply(opts...).QueryResponse(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
+// QueryResponse sends a prompt and returns a rich response with metadata.
+//
+// Example:
+//
+//	resp, err := agent.QueryResponse(ctx, "What is 2+2?")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	fmt.Println(resp.Content)
+//	if resp.Usage != nil {
+//	    fmt.Printf("Tokens: %d\n", resp.Usage.TotalTokens)
+//	}
+func QueryResponse(ctx context.Context, prompt string, opts ...Option) (*Response, error) {
+	return New("agent").Apply(opts...).QueryResponse(ctx, prompt)
 }
 
 // QueryAs sends a prompt and returns a typed response.

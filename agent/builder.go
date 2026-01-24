@@ -283,13 +283,33 @@ func (b *Builder) Run() error {
 
 // Query sends a prompt and returns the response.
 func (b *Builder) Query(ctx context.Context, prompt string) (string, error) {
+	resp, err := b.QueryResponse(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
+// QueryResponse sends a prompt and returns a rich response with metadata.
+func (b *Builder) QueryResponse(ctx context.Context, prompt string) (*Response, error) {
 	b.queryMode = true
 	a := b.buildApp()
 
-	// We need to execute with the prompt as an argument
-	// For now, use a simple approach
-	a.RootCmd().SetArgs([]string{prompt})
-	return "", a.Run()
+	// Execute query through the app's client
+	content, err := a.Client().Query(ctx, prompt)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build response with available metadata
+	// Note: Usage and ToolCalls require SDK support to populate
+	resp := &Response{
+		Content: content,
+		Model:   "", // Would need SDK to expose this
+		// Usage and ToolCalls left nil - SDK doesn't currently expose these
+	}
+
+	return resp, nil
 }
 
 // Stream sends a prompt and streams the response.
