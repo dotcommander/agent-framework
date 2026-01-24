@@ -24,6 +24,7 @@ codegen
 loop
 mcp
 subagents
+quick
 *.log
 
 # IDE
