@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1012,13 +1013,13 @@ func TestProcessEvent(t *testing.T) {
 	// Test write event
 	require.NoError(t, os.WriteFile(testFile, []byte("v2"), 0644))
 	event := fsnotify.Event{Name: testFile, Op: fsnotify.Write}
-	change := watcher.processEvent(testFile, event)
+	change := watcher.processEvent(context.Background(), testFile, event)
 	require.NotNil(t, change)
 	assert.Equal(t, "modify", change.ChangeType)
 
 	// Test remove event
 	event = fsnotify.Event{Name: testFile, Op: fsnotify.Remove}
-	change = watcher.processEvent(testFile, event)
+	change = watcher.processEvent(context.Background(), testFile, event)
 	require.NotNil(t, change)
 	assert.Equal(t, "delete", change.ChangeType)
 }
