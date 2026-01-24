@@ -33,6 +33,23 @@ replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
 
 Clone both repos as siblings for the build to work.
 
+### External Installation
+
+The `replace` directive breaks `go install`. For external users:
+
+```bash
+# Option 1: Clone and build locally
+git clone https://github.com/dotcommander/agent.git
+git clone https://github.com/dotcommander/agent-sdk-go.git
+cd agent && go build ./...
+
+# Option 2: Comment out replace in go.mod (requires published SDK)
+# In go.mod, comment or delete: replace github.com/dotcommander/agent-sdk-go => ../agent-sdk-go
+go install github.com/dotcommander/agent/cmd/agent@latest
+```
+
+For releases, the replace directive should be removed before tagging.
+
 ## Examples
 
 The `examples/` directory contains runnable examples for each major feature:
@@ -91,6 +108,13 @@ tools.TypedTool("name", "desc", schema, func(ctx context.Context, input T) (R, e
 **MCP Protocol**: Model Context Protocol in `tools/mcp.go`:
 - `MCPServer` handles initialize, tools/list, tools/call, resources/*
 - `MCPClient` + `ToolDiscovery` for connecting to external servers
+- Protocol version: `2024-11-05` (hardcoded in `handleInitialize`)
+
+MCP Compatibility:
+- Implements MCP specification dated 2024-11-05
+- Compatible with Claude Desktop, MCP Inspector, and conforming clients
+- Supports: tools/list, tools/call, resources/list, resources/read
+- JSON-RPC 2.0 transport with size limits (1MB default)
 
 ### Provider Abstraction
 
