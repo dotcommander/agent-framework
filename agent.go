@@ -11,7 +11,7 @@
 //
 // Example usage:
 //
-//	import "github.com/dotcommander/agent-framework/app"
+//	import "github.com/dotcommander/agent/app"
 //
 //	func main() {
 //	    a := app.New("myapp", "1.0.0",
@@ -26,10 +26,10 @@ import (
 	"context"
 
 	// Re-export key types for convenience
-	"github.com/dotcommander/agent-framework/app"
-	"github.com/dotcommander/agent-framework/client"
-	"github.com/dotcommander/agent-framework/config"
-	"github.com/dotcommander/agent-framework/tools"
+	"github.com/dotcommander/agent/app"
+	"github.com/dotcommander/agent/client"
+	"github.com/dotcommander/agent/config"
+	"github.com/dotcommander/agent/tools"
 )
 
 // Version is the framework version.

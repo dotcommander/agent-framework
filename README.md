@@ -37,17 +37,17 @@ Agent framework for building Claude-powered CLI tools using [agent-sdk-go](https
 
 ```bash
 # Clone both repositories as siblings (uses replace directive)
-git clone https://github.com/dotcommander/agent-framework.git
+git clone https://github.com/dotcommander/agent.git
 git clone https://github.com/dotcommander/agent-sdk-go.git
 
 # Build
-cd agent-framework && go build ./...
+cd agent && go build ./...
 ```
 
 Or add to your project:
 
 ```bash
-go get github.com/dotcommander/agent-framework
+go get github.com/dotcommander/agent
 ```
 
 ## Quick Start
@@ -59,7 +59,7 @@ package main
 
 import (
     "log"
-    "github.com/dotcommander/agent-framework/app"
+    "github.com/dotcommander/agent/app"
 )
 
 func main() {
@@ -84,8 +84,8 @@ import (
     "fmt"
     "log"
 
-    "github.com/dotcommander/agent-framework/app"
-    "github.com/dotcommander/agent-framework/tools"
+    "github.com/dotcommander/agent/app"
+    "github.com/dotcommander/agent/tools"
 )
 
 func main() {
@@ -134,7 +134,7 @@ package main
 
 import (
     "context"
-    "github.com/dotcommander/agent-framework/app"
+    "github.com/dotcommander/agent/app"
 )
 
 func main() {

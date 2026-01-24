@@ -4,9 +4,9 @@ import (
 	"fmt"
 
 	"github.com/dotcommander/agent-sdk-go/claude"
-	"github.com/dotcommander/agent-framework/client"
-	"github.com/dotcommander/agent-framework/output"
-	"github.com/dotcommander/agent-framework/tools"
+	"github.com/dotcommander/agent/client"
+	"github.com/dotcommander/agent/output"
+	"github.com/dotcommander/agent/tools"
 )
 
 // Option is a functional option for configuring App.
@@ -15,7 +15,6 @@ type Option func(*App)
 // WithSystemPrompt sets the system prompt.
 func WithSystemPrompt(prompt string) Option {
 	return func(a *App) {
-		a.config.Client.SystemPrompt = prompt
 		a.config.Client.SDKOptions = append(a.config.Client.SDKOptions,
 			claude.WithSystemPrompt(prompt))
 	}
@@ -24,7 +23,6 @@ func WithSystemPrompt(prompt string) Option {
 // WithModel sets the AI model.
 func WithModel(model string) Option {
 	return func(a *App) {
-		a.config.Client.Model = model
 		a.config.Client.SDKOptions = append(a.config.Client.SDKOptions,
 			claude.WithModel(model))
 	}
