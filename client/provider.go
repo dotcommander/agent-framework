@@ -75,17 +75,22 @@ func createAnthropicClient(ctx context.Context, cfg ProviderConfig, opts ...clau
 	// Add user-provided options
 	sdkOpts = append(sdkOpts, opts...)
 
-	return New(ctx, sdkOpts)
+	c, err := New(ctx, sdkOpts)
+	if err != nil {
+		return nil, fmt.Errorf("create anthropic client: %w", err)
+	}
+	return c, nil
 }
 
-// createZAIClient creates a client using the Z.AI provider (placeholder).
+// createZAIClient creates a client using the Z.AI provider.
+// Z.AI integration is planned but not yet implemented.
+// See: https://github.com/dotcommander/agent-framework/issues for tracking.
 func createZAIClient(ctx context.Context, cfg ProviderConfig, opts ...claude.ClientOption) (Client, error) {
-	// TODO: Implement Z.AI provider
-	return nil, fmt.Errorf("ZAI provider not yet implemented")
+	return nil, fmt.Errorf("%w: zai provider not yet implemented - use ProviderAnthropic or ProviderSynthetic", ErrInvalidProvider)
 }
 
-// createSyntheticClient creates a synthetic client for testing (placeholder).
+// createSyntheticClient creates a synthetic client for testing.
+// Returns configurable responses without making real API calls.
 func createSyntheticClient(ctx context.Context, cfg ProviderConfig, opts ...claude.ClientOption) (Client, error) {
-	// TODO: Implement synthetic provider for testing
-	return nil, fmt.Errorf("synthetic provider not yet implemented")
+	return NewSyntheticClient(), nil
 }

@@ -40,7 +40,14 @@ type (
 	// App is the main application type.
 	App = app.App
 
-	// Client is the AI client interface.
+	// Querier is the minimal interface for querying an LLM.
+	Querier = client.Querier
+
+	// StreamingQuerier extends Querier with streaming support.
+	StreamingQuerier = client.StreamingQuerier
+
+	// Client is the AI client interface (alias for StreamingQuerier).
+	// Deprecated: Use Querier or StreamingQuerier for narrower contracts.
 	Client = client.Client
 
 	// Config is the application configuration.
