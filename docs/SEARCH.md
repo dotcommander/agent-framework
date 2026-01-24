@@ -10,7 +10,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/dotcommander/agent/search"
+    "github.com/dotcommander/agent-framework/search"
 )
 
 func main() {

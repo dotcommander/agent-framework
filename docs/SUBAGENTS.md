@@ -10,7 +10,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/dotcommander/agent/app"
+    "github.com/dotcommander/agent-framework/app"
 )
 
 func main() {

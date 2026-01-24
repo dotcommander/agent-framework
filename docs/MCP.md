@@ -12,7 +12,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/dotcommander/agent/tools"
+    "github.com/dotcommander/agent-framework/tools"
 )
 
 func main() {
@@ -332,7 +332,7 @@ import (
     "net/http"
     "os"
 
-    "github.com/dotcommander/agent/tools"
+    "github.com/dotcommander/agent-framework/tools"
 )
 
 func main() {

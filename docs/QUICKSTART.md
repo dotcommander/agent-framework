@@ -28,7 +28,7 @@ package main
 
 import (
     "log"
-    "github.com/dotcommander/agent/app"
+    "github.com/dotcommander/agent-framework/app"
 )
 
 func main() {
@@ -62,13 +62,13 @@ import (
     "log"
     "time"
 
-    "github.com/dotcommander/agent"
-    "github.com/dotcommander/agent/app"
+    "github.com/dotcommander/agent-framework/app"
+    "github.com/dotcommander/agent-framework/tools"
 )
 
 func main() {
     // Create a tool
-    timeTool := agent.TypedTool(
+    timeTool := tools.TypedTool(
         "current_time",
         "Returns the current time",
         map[string]any{
@@ -109,7 +109,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/dotcommander/agent/app"
+    "github.com/dotcommander/agent-framework/app"
 )
 
 func main() {
@@ -165,7 +165,7 @@ Control output format:
 
 ```go
 import (
-    "github.com/dotcommander/agent/output"
+    "github.com/dotcommander/agent-framework/output"
 )
 
 app := app.New("myapp", "1.0.0",

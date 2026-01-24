@@ -9,7 +9,7 @@ package main
 
 import (
     "fmt"
-    "github.com/dotcommander/agent/validation"
+    "github.com/dotcommander/agent-framework/validation"
 )
 
 func main() {

@@ -123,7 +123,7 @@ The minimal application:
 ```go
 package main
 
-import "github.com/dotcommander/agent/app"
+import "github.com/dotcommander/agent-framework/app"
 
 func main() {
     a := app.New("myapp", "1.0.0",

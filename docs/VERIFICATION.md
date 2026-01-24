@@ -12,7 +12,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/dotcommander/agent/verification"
+    "github.com/dotcommander/agent-framework/verification"
 )
 
 func main() {
@@ -48,7 +48,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/dotcommander/agent/verification"
+    "github.com/dotcommander/agent-framework/verification"
 )
 
 func main() {
