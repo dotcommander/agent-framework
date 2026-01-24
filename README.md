@@ -47,7 +47,7 @@ cd agent-framework && go build ./...
 Or add to your project:
 
 ```bash
-go get github.com/dotcommander/agent
+go get github.com/dotcommander/agent-framework
 ```
 
 ## Quick Start
@@ -59,7 +59,7 @@ package main
 
 import (
     "log"
-    "github.com/dotcommander/agent/app"
+    "github.com/dotcommander/agent-framework/app"
 )
 
 func main() {
@@ -84,8 +84,8 @@ import (
     "fmt"
     "log"
 
-    "github.com/dotcommander/agent/app"
-    "github.com/dotcommander/agent/tools"
+    "github.com/dotcommander/agent-framework/app"
+    "github.com/dotcommander/agent-framework/tools"
 )
 
 func main() {
@@ -134,7 +134,7 @@ package main
 
 import (
     "context"
-    "github.com/dotcommander/agent/app"
+    "github.com/dotcommander/agent-framework/app"
 )
 
 func main() {

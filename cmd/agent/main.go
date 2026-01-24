@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/dotcommander/agent/app"
-	"github.com/dotcommander/agent/tools"
+	"github.com/dotcommander/agent-framework/app"
+	"github.com/dotcommander/agent-framework/tools"
 )
 
 func main() {

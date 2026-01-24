@@ -2,9 +2,9 @@ package app
 
 import (
 	"github.com/dotcommander/agent-sdk-go/claude"
-	"github.com/dotcommander/agent/client"
-	"github.com/dotcommander/agent/output"
-	"github.com/dotcommander/agent/tools"
+	"github.com/dotcommander/agent-framework/client"
+	"github.com/dotcommander/agent-framework/output"
+	"github.com/dotcommander/agent-framework/tools"
 )
 
 // Option is a functional option for configuring App.

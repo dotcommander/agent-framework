@@ -1,4 +1,4 @@
-module github.com/dotcommander/agent
+module github.com/dotcommander/agent-framework
 
 go 1.24.0
 

@@ -7,7 +7,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/dotcommander/agent/output"
+	"github.com/dotcommander/agent-framework/output"
 )
 
 func main() {
