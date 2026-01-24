@@ -3,6 +3,7 @@ package client
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/dotcommander/agent-sdk-go/claude"
 	"github.com/sony/gobreaker"
@@ -98,7 +99,7 @@ type Client interface {
 // clientImpl implements the Client interface.
 type clientImpl struct {
 	claude     claude.Client
-	connected  bool
+	connected  atomic.Bool
 	resilience *ResilienceWrapper
 }
 
@@ -121,9 +122,9 @@ func New(ctx context.Context, sdkOpts []claude.ClientOption, clientOpts ...Clien
 	}
 
 	client := &clientImpl{
-		claude:    c,
-		connected: true,
+		claude: c,
 	}
+	client.connected.Store(true)
 
 	// Configure resilience if enabled
 	if opts.resilienceConfig != nil {
@@ -144,7 +145,11 @@ func (c *clientImpl) CircuitBreakerState() gobreaker.State {
 
 // Query sends a prompt and returns the complete response.
 func (c *clientImpl) Query(ctx context.Context, prompt string) (string, error) {
-	if !c.connected {
+	if !c.connected.Load() {
+		return "", ErrNotConnected
+	}
+
+	if c.claude == nil {
 		return "", ErrNotConnected
 	}
 
@@ -160,7 +165,7 @@ func (c *clientImpl) Query(ctx context.Context, prompt string) (string, error) {
 
 // QueryStream sends a prompt and streams the response.
 func (c *clientImpl) QueryStream(ctx context.Context, prompt string) (<-chan Message, <-chan error) {
-	if !c.connected {
+	if !c.connected.Load() || c.claude == nil {
 		msgChan := make(chan Message)
 		errChan := make(chan error, 1)
 		errChan <- ErrNotConnected
@@ -189,9 +194,12 @@ func (c *clientImpl) WithTools(tools ...*Tool) Client {
 
 // Close releases resources associated with the client.
 func (c *clientImpl) Close() error {
-	if !c.connected {
+	if !c.connected.Load() {
 		return nil
 	}
-	c.connected = false
+	c.connected.Store(false)
+	if c.claude == nil {
+		return nil
+	}
 	return c.claude.Disconnect()
 }

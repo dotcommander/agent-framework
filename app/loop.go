@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -192,11 +193,11 @@ func (r *LoopRunner) Run(ctx context.Context) (state *LoopState, err error) {
 	// Always run shutdown hooks on exit
 	defer func() {
 		if shutdownErr := r.runShutdownHooks(); shutdownErr != nil {
-			// If we already have an error, wrap both; otherwise use shutdown error
+			// Use errors.Join for proper multi-error handling (Go 1.20+)
 			if err != nil {
-				err = fmt.Errorf("%w; shutdown error: %v", err, shutdownErr)
+				err = errors.Join(err, fmt.Errorf("shutdown: %w", shutdownErr))
 			} else {
-				err = fmt.Errorf("shutdown error: %w", shutdownErr)
+				err = fmt.Errorf("shutdown: %w", shutdownErr)
 			}
 		}
 	}()
@@ -260,16 +261,19 @@ func (r *LoopRunner) Run(ctx context.Context) (state *LoopState, err error) {
 		}
 		state.LastAction = action
 
-		// Step 3: Take action
-		result, err := r.loop.TakeAction(ctx, action)
-		if err != nil {
-			if r.config.OnError != nil {
-				r.config.OnError(err, state)
+		// Step 3: Take action (skip if no action from decide phase)
+		var result *Result
+		if action != nil {
+			result, err = r.loop.TakeAction(ctx, action)
+			if err != nil {
+				if r.config.OnError != nil {
+					r.config.OnError(err, state)
+				}
+				if r.config.StopOnError {
+					return state, fmt.Errorf("take action: %w", err)
+				}
+				result = &Result{Success: false, Error: err}
 			}
-			if r.config.StopOnError {
-				return state, fmt.Errorf("take action: %w", err)
-			}
-			result = &Result{Success: false, Error: err}
 		}
 		state.LastResult = result
 
