@@ -1,6 +1,8 @@
 package app
 
 import (
+	"fmt"
+
 	"github.com/dotcommander/agent-sdk-go/claude"
 	"github.com/dotcommander/agent-framework/client"
 	"github.com/dotcommander/agent-framework/output"
@@ -39,9 +41,7 @@ func WithProvider(provider string) Option {
 func WithTool(tool *tools.Tool) Option {
 	return func(a *App) {
 		if err := a.tools.Register(tool); err != nil {
-			// Log error but don't fail - tool registration errors
-			// are non-fatal during initialization
-			return
+			a.initErrs = append(a.initErrs, fmt.Errorf("register tool %q: %w", tool.Name, err))
 		}
 	}
 }

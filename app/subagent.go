@@ -10,6 +10,18 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// Subagent configuration defaults.
+const (
+	// DefaultSubagentMaxTokens is the token budget for a subagent.
+	DefaultSubagentMaxTokens = 100000
+
+	// DefaultMaxConcurrentSubagents limits parallel subagent execution.
+	DefaultMaxConcurrentSubagents = 5
+
+	// DefaultMaxSubagents limits total subagents that can be spawned.
+	DefaultMaxSubagents = 100
+)
+
 // ErrAllAgentsFailed is returned when all subagents fail execution.
 var ErrAllAgentsFailed = errors.New("all subagents failed")
 
@@ -64,8 +76,8 @@ type SubagentConfig struct {
 // DefaultSubagentConfig returns sensible defaults.
 func DefaultSubagentConfig() *SubagentConfig {
 	return &SubagentConfig{
-		MaxConcurrent:   5,
-		MaxSubagents:    100,
+		MaxConcurrent:   DefaultMaxConcurrentSubagents,
+		MaxSubagents:    DefaultMaxSubagents,
 		IsolateContext:  true,
 		ShareTools:      true,
 		PropagateCancel: true,
@@ -127,7 +139,7 @@ func (m *SubagentManager) Spawn(name, task string, opts ...SubagentOption) (*Sub
 			Messages:  make([]Message, 0),
 			Tools:     make([]ToolInfo, 0),
 			State:     make(map[string]any),
-			MaxTokens: 100000,
+			MaxTokens: DefaultSubagentMaxTokens,
 		},
 		parentAgent: m,
 	}

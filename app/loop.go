@@ -8,6 +8,21 @@ import (
 	"time"
 )
 
+// Loop configuration defaults.
+const (
+	// DefaultMaxIterations is the maximum agent loop iterations before stopping.
+	DefaultMaxIterations = 50
+
+	// DefaultMaxTokens is the token budget for a single agent run.
+	DefaultMaxTokens = 100000
+
+	// DefaultLoopTimeout is the maximum duration for the entire loop.
+	DefaultLoopTimeout = 30 * time.Minute
+
+	// DefaultShutdownTimeout is the maximum time to wait for shutdown hooks.
+	DefaultShutdownTimeout = 30 * time.Second
+)
+
 // ShutdownHook is a function called during graceful shutdown.
 // The context has the shutdown timeout applied.
 type ShutdownHook func(ctx context.Context) error
@@ -118,10 +133,10 @@ type LoopConfig struct {
 // DefaultLoopConfig returns sensible defaults.
 func DefaultLoopConfig() *LoopConfig {
 	return &LoopConfig{
-		MaxIterations:   50,
-		MaxTokens:       100000,
-		Timeout:         30 * time.Minute,
-		ShutdownTimeout: 30 * time.Second,
+		MaxIterations:   DefaultMaxIterations,
+		MaxTokens:       DefaultMaxTokens,
+		Timeout:         DefaultLoopTimeout,
+		ShutdownTimeout: DefaultShutdownTimeout,
 		StopOnError:     false,
 		MinScore:        0.0,
 	}
@@ -170,7 +185,7 @@ func (r *LoopRunner) runShutdownHooks() error {
 
 	timeout := r.config.ShutdownTimeout
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = DefaultShutdownTimeout
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

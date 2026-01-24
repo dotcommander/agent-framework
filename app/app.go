@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/dotcommander/agent-framework/client"
@@ -16,6 +17,10 @@ import (
 type RunFunc func(ctx context.Context, app *App, args []string) error
 
 // App represents the main application.
+//
+// Lifecycle: App can be Run() multiple times if WithClient() was used to provide
+// an externally-managed client. If the client is created internally (no WithClient),
+// it will be closed after each Run() and recreated on the next call.
 type App struct {
 	name    string
 	version string
@@ -25,6 +30,14 @@ type App struct {
 	output  *output.Dispatcher
 	runFunc RunFunc
 	rootCmd *cobra.Command
+
+	// ownsClient indicates whether App created the client and is responsible for closing it.
+	// When true, the client is closed after execute() completes.
+	ownsClient bool
+
+	// initErrs collects errors from functional options that cannot return errors directly.
+	// These are checked at Run() time.
+	initErrs []error
 }
 
 // New creates a new App with the given name and version.
@@ -62,7 +75,12 @@ func New(name, version string, opts ...Option) *App {
 
 // execute runs the application.
 func (a *App) execute(ctx context.Context, args []string) error {
-	// Initialize client if not already set
+	// Check for initialization errors from functional options
+	if len(a.initErrs) > 0 {
+		return fmt.Errorf("initialization failed: %w", errors.Join(a.initErrs...))
+	}
+
+	// Initialize client if not already set (or was closed from previous run)
 	if a.client == nil {
 		factory := client.NewProviderFactory()
 		providerCfg := client.ProviderConfig{
@@ -76,7 +94,18 @@ func (a *App) execute(ctx context.Context, args []string) error {
 			return fmt.Errorf("create client: %w", err)
 		}
 		a.client = c
-		defer a.client.Close()
+		a.ownsClient = true
+	}
+
+	// Ensure we clean up client we created when done
+	if a.ownsClient {
+		defer func() {
+			if a.client != nil {
+				a.client.Close()
+				a.client = nil // Clear reference so next Run() creates fresh client
+			}
+			a.ownsClient = false
+		}()
 	}
 
 	// Run custom function if provided
