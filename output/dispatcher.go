@@ -7,17 +7,25 @@ import (
 	"os"
 )
 
+// OutputDispatcher defines the contract for output formatting and writing.
+type OutputDispatcher interface {
+	RegisterFormatter(f Formatter)
+	Format(ctx context.Context, result any, format Format) (string, error)
+	Write(ctx context.Context, result any, format Format, dest string) error
+}
+
+// Compile-time check that Dispatcher implements OutputDispatcher.
+var _ OutputDispatcher = (*Dispatcher)(nil)
+
 // Dispatcher handles output formatting and writing.
 type Dispatcher struct {
 	formatters map[Format]Formatter
-	writers    map[string]*os.File
 }
 
 // NewDispatcher creates a new output dispatcher.
 func NewDispatcher() *Dispatcher {
 	return &Dispatcher{
 		formatters: make(map[Format]Formatter),
-		writers:    make(map[string]*os.File),
 	}
 }
 
@@ -82,15 +90,5 @@ func (d *Dispatcher) Write(ctx context.Context, result any, format Format, dest 
 		return fmt.Errorf("write file: %w", err)
 	}
 
-	return nil
-}
-
-// Close closes any open file handles.
-func (d *Dispatcher) Close() error {
-	for _, f := range d.writers {
-		if err := f.Close(); err != nil {
-			return err
-		}
-	}
 	return nil
 }

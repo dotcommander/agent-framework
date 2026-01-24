@@ -78,23 +78,26 @@ type Tool struct {
 	Handler     func(ctx context.Context, input map[string]any) (any, error)
 }
 
-// Client provides a simplified interface for interacting with Claude.
-type Client interface {
+// Querier is the minimal interface for querying an LLM.
+type Querier interface {
 	// Query sends a prompt and returns the complete response.
 	Query(ctx context.Context, prompt string) (string, error)
-
-	// QueryStream sends a prompt and streams the response.
-	QueryStream(ctx context.Context, prompt string) (<-chan Message, <-chan error)
-
-	// WithSystemPrompt returns a new client with the given system prompt.
-	WithSystemPrompt(prompt string) Client
-
-	// WithTools returns a new client with the given tools.
-	WithTools(tools ...*Tool) Client
 
 	// Close releases resources associated with the client.
 	Close() error
 }
+
+// StreamingQuerier extends Querier with streaming support.
+type StreamingQuerier interface {
+	Querier
+
+	// QueryStream sends a prompt and streams the response.
+	QueryStream(ctx context.Context, prompt string) (<-chan Message, <-chan error)
+}
+
+// Client provides backward compatibility as an alias for StreamingQuerier.
+// Deprecated: Use Querier or StreamingQuerier directly for narrower contracts.
+type Client = StreamingQuerier
 
 // clientImpl implements the Client interface.
 type clientImpl struct {
@@ -174,22 +177,6 @@ func (c *clientImpl) QueryStream(ctx context.Context, prompt string) (<-chan Mes
 		return msgChan, errChan
 	}
 	return c.claude.QueryStream(ctx, prompt)
-}
-
-// WithSystemPrompt returns a new client with the given system prompt.
-// Note: This is a simplified implementation. In production, you would create
-// a new client with the system prompt option.
-func (c *clientImpl) WithSystemPrompt(prompt string) Client {
-	// For now, return self - a full implementation would create a new client
-	return c
-}
-
-// WithTools returns a new client with the given tools.
-// Note: This is a simplified implementation. In production, you would create
-// a new client with the tools configured.
-func (c *clientImpl) WithTools(tools ...*Tool) Client {
-	// For now, return self - a full implementation would configure MCP servers
-	return c
 }
 
 // Close releases resources associated with the client.
