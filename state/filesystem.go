@@ -220,8 +220,8 @@ func (s *FileSystemStore) captureFileInternalWithContext(ctx context.Context, va
 	}
 
 	// Check context before expensive hash operation
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
 	}
 
 	// Calculate hash with context support

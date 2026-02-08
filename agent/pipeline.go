@@ -124,11 +124,12 @@ func (p *Pipeline) Run(ctx context.Context, input string) (string, error) {
 
 		// Build prompt
 		var prompt string
-		if step.builder != nil {
+		switch {
+		case step.builder != nil:
 			prompt = step.builder(current)
-		} else if step.template != "" {
+		case step.template != "":
 			prompt = fmt.Sprintf(step.template, current)
-		} else {
+		default:
 			prompt = current
 		}
 
@@ -172,11 +173,12 @@ func (p *Pipeline) RunWithResults(ctx context.Context, input string) ([]StepResu
 		}
 
 		var prompt string
-		if step.builder != nil {
+		switch {
+		case step.builder != nil:
 			prompt = step.builder(current)
-		} else if step.template != "" {
+		case step.template != "":
 			prompt = fmt.Sprintf(step.template, current)
-		} else {
+		default:
 			prompt = current
 		}
 

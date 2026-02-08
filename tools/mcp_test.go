@@ -271,13 +271,14 @@ func TestToolsListWithTools(t *testing.T) {
 		name, ok := tool["name"].(string)
 		require.True(t, ok)
 
-		if name == "calculator" {
+		switch name {
+		case "calculator":
 			assert.Equal(t, "Performs calculations", tool["description"])
 			assert.NotNil(t, tool["inputSchema"])
-		} else if name == "weather" {
+		case "weather":
 			assert.Equal(t, "Gets weather info", tool["description"])
 			assert.NotNil(t, tool["inputSchema"])
-		} else {
+		default:
 			t.Errorf("unexpected tool name: %s", name)
 		}
 	}
@@ -529,15 +530,16 @@ func TestResourcesListWithResources(t *testing.T) {
 		uri, ok := res["uri"].(string)
 		require.True(t, ok)
 
-		if uri == "file:///test.txt" {
+		switch uri {
+		case "file:///test.txt":
 			assert.Equal(t, "test.txt", res["name"])
 			assert.Equal(t, "A test file", res["description"])
 			assert.Equal(t, "text/plain", res["mimeType"])
-		} else if uri == "file:///data.json" {
+		case "file:///data.json":
 			assert.Equal(t, "data.json", res["name"])
 			assert.Equal(t, "JSON data", res["description"])
 			assert.Equal(t, "application/json", res["mimeType"])
-		} else {
+		default:
 			t.Errorf("unexpected resource URI: %s", uri)
 		}
 	}

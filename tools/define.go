@@ -43,8 +43,8 @@ func Define[I, O any](name, description string, fn func(context.Context, I) (O, 
 			}
 
 			var typedInput I
-			if err := json.Unmarshal(data, &typedInput); err != nil {
-				return nil, fmt.Errorf("unmarshal to %T: %w", typedInput, err)
+			if unmarshalErr := json.Unmarshal(data, &typedInput); unmarshalErr != nil {
+				return nil, fmt.Errorf("unmarshal to %T: %w", typedInput, unmarshalErr)
 			}
 
 			// Call the handler
