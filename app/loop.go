@@ -217,6 +217,62 @@ func (r *LoopRunner) runShutdownHooks() error {
 	return firstErr
 }
 
+// handleStepError invokes the OnError hook and checks StopOnError policy.
+// If StopOnError is true, returns a wrapped error; otherwise returns nil.
+func (r *LoopRunner) handleStepError(err error, state *LoopState, phase string) error {
+	if r.config.OnError != nil {
+		r.config.OnError(err, state)
+	}
+	if r.config.StopOnError {
+		return fmt.Errorf("%s: %w", phase, err)
+	}
+	return nil
+}
+
+// checkLimits checks context cancellation and iteration limits before each iteration.
+func (r *LoopRunner) checkLimits(ctx context.Context, state *LoopState) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("loop cancelled: %w", err)
+	}
+	if r.config.MaxIterations > 0 && state.Iteration >= r.config.MaxIterations {
+		return fmt.Errorf("max iterations (%d) reached", r.config.MaxIterations)
+	}
+	return nil
+}
+
+// runStuckDetection records verification feedback and checks for stuck patterns.
+// Returns an error if a stuck pattern is detected and the loop should stop.
+func (r *LoopRunner) runStuckDetection(feedback *Feedback, state *LoopState) error {
+	if r.stuckDetector == nil {
+		return nil
+	}
+
+	var stuckPattern *StuckPattern
+	const taskID = "loop"
+
+	if feedback != nil && !feedback.Valid {
+		errMsg := "verification failed"
+		if len(feedback.Issues) > 0 {
+			errMsg = feedback.Issues[0]
+		}
+		stuckPattern = r.stuckDetector.RecordError(taskID, errMsg)
+	} else if feedback != nil && feedback.Valid {
+		stuckPattern = r.stuckDetector.RecordResult(taskID, true)
+	}
+
+	if stuckPattern != nil {
+		if r.config.OnStuckPattern != nil {
+			if !r.config.OnStuckPattern(stuckPattern, state) {
+				return fmt.Errorf("stuck pattern detected: %s", stuckPattern.Message)
+			}
+		} else {
+			return fmt.Errorf("stuck pattern detected: %s", stuckPattern.Message)
+		}
+	}
+
+	return nil
+}
+
 // Run executes the agent loop until completion or limit.
 // Shutdown hooks are called when the loop exits (for any reason).
 func (r *LoopRunner) Run(ctx context.Context) (state *LoopState, err error) {
@@ -245,14 +301,9 @@ func (r *LoopRunner) Run(ctx context.Context) (state *LoopState, err error) {
 	}
 
 	for {
-		// Check context cancellation
-		if err := ctx.Err(); err != nil {
-			return state, fmt.Errorf("loop cancelled: %w", err)
-		}
-
-		// Check iteration limit
-		if r.config.MaxIterations > 0 && state.Iteration >= r.config.MaxIterations {
-			return state, fmt.Errorf("max iterations (%d) reached", r.config.MaxIterations)
+		// Pre-iteration limit checks
+		if err := r.checkLimits(ctx, state); err != nil {
+			return state, err
 		}
 
 		state.Iteration++
@@ -265,11 +316,8 @@ func (r *LoopRunner) Run(ctx context.Context) (state *LoopState, err error) {
 		// Step 1: Gather context
 		loopCtx, err := r.loop.GatherContext(ctx, state)
 		if err != nil {
-			if r.config.OnError != nil {
-				r.config.OnError(err, state)
-			}
-			if r.config.StopOnError {
-				return state, fmt.Errorf("gather context: %w", err)
+			if stepErr := r.handleStepError(err, state, "gather context"); stepErr != nil {
+				return state, stepErr
 			}
 		}
 		state.Context = loopCtx
@@ -282,11 +330,8 @@ func (r *LoopRunner) Run(ctx context.Context) (state *LoopState, err error) {
 		// Step 2: Decide action
 		action, err := r.loop.DecideAction(ctx, state)
 		if err != nil {
-			if r.config.OnError != nil {
-				r.config.OnError(err, state)
-			}
-			if r.config.StopOnError {
-				return state, fmt.Errorf("decide action: %w", err)
+			if stepErr := r.handleStepError(err, state, "decide action"); stepErr != nil {
+				return state, stepErr
 			}
 		}
 		state.LastAction = action
@@ -296,11 +341,8 @@ func (r *LoopRunner) Run(ctx context.Context) (state *LoopState, err error) {
 		if action != nil {
 			result, err = r.loop.TakeAction(ctx, action)
 			if err != nil {
-				if r.config.OnError != nil {
-					r.config.OnError(err, state)
-				}
-				if r.config.StopOnError {
-					return state, fmt.Errorf("take action: %w", err)
+				if stepErr := r.handleStepError(err, state, "take action"); stepErr != nil {
+					return state, stepErr
 				}
 				result = &Result{Success: false, Error: err}
 			}
@@ -310,43 +352,15 @@ func (r *LoopRunner) Run(ctx context.Context) (state *LoopState, err error) {
 		// Step 4: Verify
 		feedback, err := r.loop.Verify(ctx, state)
 		if err != nil {
-			if r.config.OnError != nil {
-				r.config.OnError(err, state)
-			}
-			if r.config.StopOnError {
-				return state, fmt.Errorf("verify: %w", err)
+			if stepErr := r.handleStepError(err, state, "verify"); stepErr != nil {
+				return state, stepErr
 			}
 		}
 		state.LastVerify = feedback
 
 		// Step 4b: Check for stuck patterns
-		if r.stuckDetector != nil {
-			var stuckPattern *StuckPattern
-			// Use "loop" as task ID to track patterns across all iterations
-			const taskID = "loop"
-
-			if feedback != nil && !feedback.Valid {
-				// Verification failed - record as error
-				errMsg := "verification failed"
-				if len(feedback.Issues) > 0 {
-					errMsg = feedback.Issues[0]
-				}
-				stuckPattern = r.stuckDetector.RecordError(taskID, errMsg)
-			} else if feedback != nil && feedback.Valid {
-				// Verification passed
-				stuckPattern = r.stuckDetector.RecordResult(taskID, true)
-			}
-
-			if stuckPattern != nil {
-				if r.config.OnStuckPattern != nil {
-					if !r.config.OnStuckPattern(stuckPattern, state) {
-						return state, fmt.Errorf("stuck pattern detected: %s", stuckPattern.Message)
-					}
-				} else {
-					// No handler, stop by default
-					return state, fmt.Errorf("stuck pattern detected: %s", stuckPattern.Message)
-				}
-			}
+		if err := r.runStuckDetection(feedback, state); err != nil {
+			return state, err
 		}
 
 		// Hook: iteration end
