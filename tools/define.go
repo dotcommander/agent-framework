@@ -72,20 +72,25 @@ func Define[I, O any](name, description string, fn func(context.Context, I) (O, 
 //	        return string(runes), nil
 //	    },
 //	)
+// singleStringInputSchema returns the JSON schema for a tool that takes a single string input.
+func singleStringInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"input": map[string]any{
+				"type":        "string",
+				"description": "Input value",
+			},
+		},
+		"required": []string{"input"},
+	}
+}
+
 func DefineSimple(name, description string, fn func(string) (string, error)) *Tool {
 	return &Tool{
 		Name:        name,
 		Description: description,
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"input": map[string]any{
-					"type":        "string",
-					"description": "Input value",
-				},
-			},
-			"required": []string{"input"},
-		},
+		InputSchema: singleStringInputSchema(),
 		Handler: func(ctx context.Context, input map[string]any) (any, error) {
 			s, ok := input["input"].(string)
 			if !ok {
@@ -116,16 +121,7 @@ func DefineAsync(name, description string, fn func(context.Context, string) erro
 	return &Tool{
 		Name:        name,
 		Description: description,
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"input": map[string]any{
-					"type":        "string",
-					"description": "Input value",
-				},
-			},
-			"required": []string{"input"},
-		},
+		InputSchema: singleStringInputSchema(),
 		Handler: func(ctx context.Context, input map[string]any) (any, error) {
 			s, ok := input["input"].(string)
 			if !ok {
