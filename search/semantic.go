@@ -166,7 +166,10 @@ func (idx *SemanticIndex) waitForRateLimit(ctx context.Context) error {
 	if idx.rateLimiter == nil {
 		return nil
 	}
-	return idx.rateLimiter.Wait(ctx)
+	if err := idx.rateLimiter.Wait(ctx); err != nil {
+		return fmt.Errorf("rate limit wait: %w", err)
+	}
+	return nil
 }
 
 // Add adds a document to the index.
@@ -178,7 +181,7 @@ func (idx *SemanticIndex) Add(ctx context.Context, doc *Document) error {
 	// Generate document embedding
 	if len(doc.Embedding) == 0 && idx.embedder != nil {
 		if err := idx.waitForRateLimit(ctx); err != nil {
-			return fmt.Errorf("rate limit wait: %w", err)
+			return err
 		}
 		embedding, err := idx.embedder.Embed(ctx, doc.Content)
 		if err != nil {
@@ -195,7 +198,7 @@ func (idx *SemanticIndex) Add(ctx context.Context, doc *Document) error {
 		// Embed chunks
 		if idx.embedder != nil && len(chunks) > 0 {
 			if err := idx.waitForRateLimit(ctx); err != nil {
-				return fmt.Errorf("rate limit wait: %w", err)
+				return err
 			}
 			texts := make([]string, len(chunks))
 			for i, chunk := range chunks {
@@ -314,7 +317,7 @@ func (idx *SemanticIndex) Search(ctx context.Context, query string, topK int) ([
 
 	// Wait for rate limit before embedding query
 	if err := idx.waitForRateLimit(ctx); err != nil {
-		return nil, fmt.Errorf("rate limit wait: %w", err)
+		return nil, err
 	}
 
 	// Embed query
@@ -334,7 +337,7 @@ func (idx *SemanticIndex) SearchWithOptions(ctx context.Context, query string, o
 
 	// Wait for rate limit before embedding query
 	if err := idx.waitForRateLimit(ctx); err != nil {
-		return nil, fmt.Errorf("rate limit wait: %w", err)
+		return nil, err
 	}
 
 	queryEmbedding, err := idx.embedder.Embed(ctx, query)
