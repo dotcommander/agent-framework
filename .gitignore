@@ -40,5 +40,11 @@ subagents
 # OS
 .DS_Store
 
+# Analysis artifacts
+analysis-results/
+
+# Work directory
+.work/
+
 # Claude Code local config
 .claude/
